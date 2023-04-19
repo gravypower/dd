@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"time"
 )
 
 type cbcCipher struct {
@@ -83,10 +82,6 @@ func PKCS5Trimming(encrypt []byte) []byte {
 		return encrypt
 	}
 	return encrypt[:len(encrypt)-int(padding)]
-}
-
-func renderTime(t time.Time) int64 {
-	return t.UnixNano() / 1e6
 }
 
 func md5hash(s string) []byte {

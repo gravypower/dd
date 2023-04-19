@@ -2,27 +2,26 @@ package dd
 
 import (
 	"bytes"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"log"
 	"net/http"
 	"time"
 )
 
-var (
-	// ErrNotConnected is returned if Conn isn't set up properly.
-	ErrNotConnected = errors.New("not connected")
+const (
+	RemoteAPIBase = "https://version2.smartdoordevices.com"
+	SDKPort       = 8991
+	DefaultPort   = 8989
 )
 
 // Conn is a connection to the service.
 type Conn struct {
 	Version            string // version number to send
-	Target             string // base URL
+	Host               string // hostname
 	InsecureSkipVerify bool   // ignore certs, used for local conns
 	RequestMode        bool   // whether to "request" changes, used for talking to online server
 	Debug              bool   // whether to log debug
@@ -68,6 +67,7 @@ type genericRequest struct {
 	Path             string `json:"path,omitempty"`
 
 	// connect only
+	UserId            string `json:"userId,omitempty"`
 	Phone             string `json:"phoneId,omitempty"`
 	PhonePassword     string `json:"phonePassword,omitempty"`
 	UserPassword      string `json:"userPassword,omitempty"`
@@ -75,9 +75,6 @@ type genericRequest struct {
 }
 
 type genericResponse struct {
-	dc         *Conn // for knowledge of Debug
-	statusCode int
-
 	SessionSignature string `json:"sessionSig"`
 	RawMessages      string `json:"messages"`
 	Message          string `json:"message"`
@@ -116,6 +113,10 @@ type Message struct {
 	DecodedMessage []byte `json:"-"` // actual decoded message
 }
 
+func (m *Message) Decode(target interface{}) error {
+	return json.NewDecoder(bytes.NewBuffer(m.DecodedMessage)).Decode(target)
+}
+
 type connectResponseData struct {
 	UserAccess struct {
 		IsAccessReady                 bool   `json:"isAccessReady"`
@@ -134,47 +135,78 @@ type connectResponseData struct {
 	IsAdmin           bool `json:"isAdmin"`
 }
 
-func (dc *Conn) request(greq *genericRequest) (*genericResponse, error) {
-	b, err := json.Marshal(greq)
-	if err != nil {
-		return nil, err
+// Returns a madeup user-agent.
+func UserAgent(version string) string {
+	return fmt.Sprintf("sddAndroid-%s-LGE Nexus 5X(28)", version)
+}
+
+type SimpleRequestTarget int
+
+const (
+	DefaultTarget SimpleRequestTarget = iota
+	SDKTarget
+	RemoteTarget
+)
+
+type SimpleRequest struct {
+	Path   string              // Path for request
+	Target SimpleRequestTarget // Where to call
+	Input  interface{}
+	Output interface{}
+}
+
+// Performs a simple request to our device. Does not care about sessions.
+func (dc *Conn) SimpleRequest(arg SimpleRequest) error {
+	if len(arg.Path) > 0 && arg.Path[0] != '/' {
+		return fmt.Errorf("path must start with /, got: %v", arg.Path)
 	}
 
-	isOnline := dc.RequestMode && greq.requestIfOnline
-	part := greq.Path
-	if isOnline {
-		part = "app/res/request"
+	jsonBytes, err := json.Marshal(arg.Input)
+	if err != nil {
+		return err
+	}
+
+	var url string
+	if arg.Target == RemoteTarget {
+		url = fmt.Sprintf("https://%s%s", RemoteAPIBase, arg.Path)
+	} else if arg.Target == SDKTarget {
+		url = fmt.Sprintf("https://%s:%d%s", dc.Host, SDKPort, arg.Path)
+	} else if arg.Target == DefaultTarget {
+		url = fmt.Sprintf("https://%s:%d%s", dc.Host, DefaultPort, arg.Path)
 	} else {
-		greq.Path = ""
+		return fmt.Errorf("unknown target: %v", arg.Target)
 	}
 
-	buf := bytes.NewBuffer(b)
-	url := fmt.Sprintf("%s/%s", dc.Target, part)
-	req, err := http.NewRequest("POST", url, buf)
+	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonBytes))
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if dc.Debug {
-		log.Printf("sending url=%v bytes: %v", url, string(b))
+		log.Printf("sending url=%v json=%v", url, string(jsonBytes))
 	}
 
-	req.Header.Set("User-Agent", fmt.Sprintf("sddAndroid-%s-LGE Nexus 5X(28)", dc.Version))
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", UserAgent(dc.Version))
 	req.Header.Set("version", dc.Version)
+	req.Header.Set("platform", "android")
 
+	// Implicitly create unauthenticated client.
 	if dc.client == nil {
-		return nil, ErrNotConnected // need to call .Connect first
+		customTransport := http.DefaultTransport.(*http.Transport).Clone()
+		customTransport.TLSClientConfig.InsecureSkipVerify = true
+		dc.client = &http.Client{Transport: customTransport}
 	}
+
 	resp, err := dc.client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil
 	}
 	defer resp.Body.Close()
 
 	// nb. we could use json.NewDecoder(..) here, but this way logging bytes is easy
-	responseBytes, err := ioutil.ReadAll(resp.Body)
+	responseBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if dc.Debug {
 		log.Printf("got raw response: (code=%v) %v", resp.StatusCode, string(responseBytes))
@@ -182,16 +214,29 @@ func (dc *Conn) request(greq *genericRequest) (*genericResponse, error) {
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("non-2xx status code for %v: %v (len=%d)", part, resp.Status, len(responseBytes))
+		return fmt.Errorf("non-2xx status code for target=%v path=%v: %v (len=%d)", arg.Target, arg.Path, resp.Status, len(responseBytes))
 	}
 
-	gresp := &genericResponse{
-		dc:         dc,
-		statusCode: resp.StatusCode,
+	return json.Unmarshal(responseBytes, arg.Output)
+}
+
+func (dc *Conn) genericRequest(greq *genericRequest) (*genericResponse, error) {
+	isOnline := dc.RequestMode && greq.requestIfOnline
+	var part string
+	if isOnline {
+		part = "/app/res/request"
+	} else {
+		part = "/" + greq.Path
+		greq.Path = ""
 	}
-	err = json.Unmarshal(responseBytes, gresp)
+
+	gresp := genericResponse{}
+	err := dc.SimpleRequest(SimpleRequest{
+		Path:   part,
+		Input:  greq,
+		Output: &gresp,
+	})
 	if err != nil {
-		log.Printf("failed to unmarshal: %v", string(responseBytes))
 		return nil, err
 	}
 
@@ -212,12 +257,12 @@ func (dc *Conn) request(greq *genericRequest) (*genericResponse, error) {
 		dc.pendingMessages = append(dc.pendingMessages, message)
 	}
 
-	// fail if there's a message
+	// fail if there's a message (this is not "messages", but rather, an error)
 	if gresp.Message != "" {
 		return nil, fmt.Errorf("got error message: %v", gresp.Message)
 	}
 
-	return gresp, nil
+	return &gresp, nil
 }
 
 func (dc *Conn) signedRequest(conf requestConfig) (*genericRequest, error) {
@@ -262,38 +307,15 @@ func (dc *Conn) signedRequest(conf requestConfig) (*genericRequest, error) {
 // Close shuts down this Conn.
 func (dc *Conn) Close() {
 	if dc.client != nil {
-		// nb. dc.client.CloseIdleConnections() appears in Go 1.12
-		if t, ok := dc.client.Transport.(*http.Transport); ok {
-			t.CloseIdleConnections()
-		}
+		dc.client.CloseIdleConnections()
 		dc.client = nil
 	}
 }
 
 // Connect passes credentials to the server and sets up secrets.
 func (dc *Conn) Connect(cred Credential) error {
-	dc.Close()
-
-	// append cert to the pool for our transport
-	rootCAs, _ := x509.SystemCertPool()
-	if rootCAs == nil {
-		rootCAs = x509.NewCertPool()
-	}
-	if ok := rootCAs.AppendCertsFromPEM(selfSignedPEM); !ok {
-		return errors.New("could not parse included PEM")
-	}
-
-	// setup Client that allows updated CAs
-	dc.client = &http.Client{
-		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				RootCAs:            rootCAs,
-				InsecureSkipVerify: dc.InsecureSkipVerify,
-			},
-		},
-	}
-
 	dc.cred = cred
+
 	greq := &genericRequest{
 		BaseStation:       cred.BaseStation,
 		Phone:             cred.Phone,
@@ -309,7 +331,7 @@ func (dc *Conn) Connect(cred Credential) error {
 	dc.phoneSecret = md5hash(cred.PhoneSecret)
 	dc.phoneSecretRaw = []byte(cred.PhoneSecret)
 
-	gresp, err := dc.request(greq)
+	gresp, err := dc.genericRequest(greq)
 	if err != nil {
 		return err
 	}
@@ -337,7 +359,7 @@ func (dc *Conn) Messages(checkIfNone bool) ([]*Message, error) {
 		if err != nil {
 			return nil, err
 		}
-		_, err = dc.request(greq)
+		_, err = dc.genericRequest(greq)
 		if err != nil {
 			return nil, err
 		}
@@ -366,7 +388,7 @@ func (dc *Conn) Request(path string, payload interface{}) (string, error) {
 		return "", err
 	}
 
-	resp, err := dc.request(greq)
+	resp, err := dc.genericRequest(greq)
 	if err != nil {
 		return "", err
 	}
