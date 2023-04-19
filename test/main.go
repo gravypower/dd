@@ -3,8 +3,10 @@ package main
 import (
 	"flag"
 	"log"
+	"time"
 
 	"github.com/samthor/dd"
+	ddapi "github.com/samthor/dd/api"
 )
 
 var (
@@ -26,7 +28,7 @@ func main() {
 		Debug:              *flagDebug,
 	}
 
-	var info BasicInfo
+	var info ddapi.BasicInfo
 	err := conn.SimpleRequest(dd.SimpleRequest{
 		Path:   "/sdk/info",
 		Target: dd.SDKTarget,
@@ -37,8 +39,6 @@ func main() {
 	}
 	log.Printf("got basic info: %+v", info)
 
-	// remoteRegister(shareCode, sharePassword)
-
 	cred := dd.Credential{
 		BaseStation:   info.BaseStation,
 		PhoneSecret:   "gSFVYjhgNFdHs8hq",
@@ -46,54 +46,69 @@ func main() {
 		UserPassword:  sharePassword,
 		PhonePassword: "QsgEAJF3vQQi2AMB",
 	}
-
 	err = conn.Connect(cred)
 	if err != nil {
 		log.Fatalf("Could not connect: %v", err)
 	}
 
-	var empty struct{}
-	res, err := conn.Request("app/res/menu", empty)
+	go func() {
+		for {
+			messages, err := conn.Messages()
+			if err != nil {
+				log.Fatalf("Err fetching background messages: %v", err)
+			}
+			// TODO: This is probably a status change (button change).
+			// Just decodes payload right now, no ID of what it is/was?
+			for _, m := range messages {
+				var out ddapi.DoorStatus
+				m.Decode(&out)
+				log.Printf("Got status message: %+v", out)
+			}
+			time.Sleep(time.Second * 4)
+		}
+	}()
+
+	var deviceId string
+
+	for range []int{1, 2, 3} {
+		var devices ddapi.DoorStatus
+		err = conn.RPC(dd.RPC{
+			Path:   "/app/res/devices/fetch",
+			Output: &devices,
+		})
+		if err != nil {
+			log.Fatalf("Could not do request: %v", err)
+		}
+		log.Printf("Got devices: %+v", devices)
+
+		deviceId = devices.DeviceOrder[0]
+	}
+
+	var commandInput ddapi.CommandInput
+	commandInput.DeviceId = deviceId
+	commandInput.Action.Command = ddapi.CommandForRatio(0)
+	var commandOutput ddapi.CommandOutput
+	err = conn.RPC(dd.RPC{
+		Path:   "/app/res/action",
+		Input:  &commandInput,
+		Output: &commandOutput,
+	})
 	if err != nil {
 		log.Fatalf("Could not do request: %v", err)
 	}
+	log.Printf("Got command response: %+v", commandOutput)
 
-	log.Printf("Got res: %+v", res)
-
-	messages, err := conn.Messages(true)
-	if err != nil {
-		log.Fatalf("Could not read messages: %v", err)
-	}
-	for _, m := range messages {
-		var out = make(map[string]interface{})
-		m.Decode(&out)
-		log.Printf("got message: %+v", out)
-	}
-}
-
-type BasicInfo struct {
-	BaseStation string `json:"bsid"`
-	Mono        int64  `json:"mono"`
-	Clock       int64  `json:"clock"`
-	Name        string `json:"name"`
-	Version     int    `json:"version"`
+	time.Sleep(time.Hour)
 }
 
 func remoteRegister(conn *dd.Conn, code string, password string) {
-	type RegisterRequest struct {
-		RemoteRegistrationCode string `json:"remoteRegistrationCode"`
-		UserPassword           string `json:"userPassword"`
-		PhoneModel             string `json:"phoneModel"`
-		PhoneName              string `json:"phoneName"` // can be renamed by user in app later
-	}
-
-	req := RegisterRequest{
+	req := ddapi.RegisterRequest{
 		RemoteRegistrationCode: code,
 		UserPassword:           password,
 		PhoneName:              "lol, hi nerds",
 		PhoneModel:             "lol, hi nerds",
 	}
-	out := make(map[string]interface{})
+	out := ddapi.RegisterResponse{}
 
 	err := conn.SimpleRequest(dd.SimpleRequest{
 		Path:   "/app/remoteregister",

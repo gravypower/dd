@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 )
 
@@ -38,6 +39,9 @@ type Conn struct {
 
 	sequenceIDSuffix int // incremented suffix (to track replies)
 	pendingMessages  []*Message
+
+	unresolvedMutex sync.Mutex
+	unresolvedRPC   map[string]chan *Message
 }
 
 // Credential holds login/connect credentials.
@@ -79,6 +83,7 @@ type genericResponse struct {
 	RawMessages      string `json:"messages"`
 	Message          string `json:"message"`
 	BaseStation      string `json:"bsid"`
+	inlineResponse   []byte
 	dataPayload
 
 	// connect response
@@ -135,11 +140,6 @@ type connectResponseData struct {
 	IsAdmin           bool `json:"isAdmin"`
 }
 
-// Returns a madeup user-agent.
-func UserAgent(version string) string {
-	return fmt.Sprintf("sddAndroid-%s-LGE Nexus 5X(28)", version)
-}
-
 type SimpleRequestTarget int
 
 const (
@@ -186,7 +186,7 @@ func (dc *Conn) SimpleRequest(arg SimpleRequest) error {
 	}
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", UserAgent(dc.Version))
+	req.Header.Set("User-Agent", fmt.Sprintf("sddAndroid-%s-LGE Nexus 5X(28)", dc.Version))
 	req.Header.Set("version", dc.Version)
 	req.Header.Set("platform", "android")
 
@@ -254,6 +254,30 @@ func (dc *Conn) genericRequest(greq *genericRequest) (*genericResponse, error) {
 			log.Printf("got message: %+v %+v", message, string(b))
 		}
 		message.DecodedMessage = b
+
+		// Got an inline response
+		if greq.ProcessID == message.ProcessID {
+			if message.ProcessState == nil || *message.ProcessState == 0 {
+				gresp.inlineResponse = b
+				continue
+			}
+			// We're ignoring this because it's not yet complete
+			// TODO: check that the string makes sense?
+			continue
+		}
+
+		// Check if we're part of the pending set
+		dc.unresolvedMutex.Lock()
+
+		prev, ok := dc.unresolvedRPC[message.ProcessID]
+		if ok {
+			delete(dc.unresolvedRPC, message.ProcessID)
+			dc.unresolvedMutex.Unlock()
+			prev <- message
+			continue
+		}
+
+		dc.unresolvedMutex.Unlock()
 		dc.pendingMessages = append(dc.pendingMessages, message)
 	}
 
@@ -315,6 +339,7 @@ func (dc *Conn) Close() {
 // Connect passes credentials to the server and sets up secrets.
 func (dc *Conn) Connect(cred Credential) error {
 	dc.cred = cred
+	dc.unresolvedRPC = make(map[string]chan *Message)
 
 	greq := &genericRequest{
 		BaseStation:       cred.BaseStation,
@@ -352,9 +377,9 @@ func (dc *Conn) Connect(cred Credential) error {
 	return nil
 }
 
-// Messages gets any pending messages from the server.
-func (dc *Conn) Messages(checkIfNone bool) ([]*Message, error) {
-	if len(dc.pendingMessages) == 0 && checkIfNone {
+// Messages gets any pending status messages from the server.
+func (dc *Conn) Messages() ([]*Message, error) {
+	if len(dc.pendingMessages) == 0 {
 		greq, err := dc.signedRequest(requestConfig{path: "app/res/messages"})
 		if err != nil {
 			return nil, err
@@ -370,29 +395,75 @@ func (dc *Conn) Messages(checkIfNone bool) ([]*Message, error) {
 	return out, nil
 }
 
-// Request makes a generic request and returns the ID of the request.
-func (dc *Conn) Request(path string, payload interface{}) (string, error) {
+type RPC struct {
+	Path   string
+	Input  interface{}
+	Output interface{}
+}
+
+// Request makes a signed generic RPC and waits until its response is available.
+// In some cases this might rely on Messages() being called occasionally.
+func (dc *Conn) RPC(rpc RPC) error {
 	var err error
 	var b []byte
 
-	if payload != nil {
-		b, err = json.Marshal(payload)
+	if rpc.Input != nil {
+		b, err = json.Marshal(rpc.Input)
 		if err != nil {
-			return "", err
+			return err
 		}
+	}
+
+	var path string
+	if len(rpc.Path) > 0 {
+		if rpc.Path[0] != '/' {
+			return fmt.Errorf("rpc.Path must start with /, got: %v", rpc.Path)
+		}
+		path = rpc.Path[1:]
 	}
 
 	// create/sign request
 	greq, err := dc.signedRequest(requestConfig{data: b, path: path, requestIfOnline: true})
 	if err != nil {
-		return "", err
+		return err
 	}
 
 	resp, err := dc.genericRequest(greq)
 	if err != nil {
-		return "", err
+		return err
 	}
 
-	_, err = resp.dataPayload.readData(dc.phoneSecret)
-	return greq.ProcessID, err
+	var responseBytes []byte
+
+	if resp.inlineResponse != nil {
+		responseBytes = resp.inlineResponse
+	} else {
+		ch := make(chan *Message)
+		dc.unresolvedMutex.Lock()
+		dc.unresolvedRPC[greq.ProcessID] = ch
+		dc.unresolvedMutex.Unlock()
+		if dc.Debug {
+			log.Printf("! Delaying for process=%v", greq.ProcessID)
+		}
+		m := <-ch
+		responseBytes = m.DecodedMessage
+	}
+
+	// Unmarshal into generic response to see if we were a valid command
+	var output struct {
+		Code        int    `json:"code"`
+		Description string `json:"description"`
+	}
+	err = json.Unmarshal(responseBytes, &output)
+	if err != nil {
+		if dc.Debug {
+			log.Printf("could not decode non-json: %v", string(resp.inlineResponse))
+		}
+		return err
+	}
+	if output.Code != 0 {
+		return fmt.Errorf("got unhandled error calling path=%v code=%v note=%v", rpc.Path, output.Code, output.Description)
+	}
+
+	return json.Unmarshal(responseBytes, rpc.Output)
 }
