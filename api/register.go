@@ -1,5 +1,9 @@
 package api
 
+import (
+	"github.com/samthor/dd"
+)
+
 type RegisterRequest struct {
 	RemoteRegistrationCode string `json:"remoteRegistrationCode"`
 	UserPassword           string `json:"userPassword"`
@@ -8,12 +12,9 @@ type RegisterRequest struct {
 }
 
 type RegisterResponse struct {
-	BaseStation   string `json:"bsid"`
-	IsAdmin       bool   `json:"isAdmin"`
-	Name          string `json:"name"`
-	PhoneId       string `json:"phoneId"`
-	PhonePassword string `json:"phonePassword"`
-	PhoneSecret   string `json:"phoneSecret"`
-	UserId        string `json:"userId"`
-	UserName      string `json:"userName"`
+	dd.Credential        // this includes UserPassword, not actually part of response
+	IsAdmin       bool   `json:"isAdmin,omitempty"`
+	Name          string `json:"name,omitempty"`
+	UserId        string `json:"userId,omitempty"`
+	UserName      string `json:"userName,omitempty"`
 }

@@ -14,18 +14,22 @@ import (
 )
 
 const (
-	RemoteAPIBase = "https://version2.smartdoordevices.com"
-	SDKPort       = 8991
-	DefaultPort   = 8989
+	RemoteAPIBase  = "https://version2.smartdoordevices.com"
+	SDKPort        = 8991
+	DefaultPort    = 8989
+	DefaultVersion = "2.21.1"
+)
+
+var (
+	ErrTimeout = errors.New("RPC call timeout")
 )
 
 // Conn is a connection to the service.
 type Conn struct {
-	Version            string // version number to send
-	Host               string // hostname
-	InsecureSkipVerify bool   // ignore certs, used for local conns
-	RequestMode        bool   // whether to "request" changes, used for talking to online server
-	Debug              bool   // whether to log debug
+	Version     string // version number to send
+	Host        string // hostname
+	RequestMode bool   // whether to "request" changes, used for talking to online server
+	Debug       bool   // whether to log debug
 
 	cred   Credential   // cached creds
 	client *http.Client // cached optional client
@@ -40,17 +44,18 @@ type Conn struct {
 	sequenceIDSuffix int // incremented suffix (to track replies)
 	pendingMessages  []*Message
 
-	unresolvedMutex sync.Mutex
-	unresolvedRPC   map[string]chan *Message
+	genericRequestMutex sync.Mutex
+	unresolvedMutex     sync.Mutex
+	unresolvedRPC       map[string]chan *Message
 }
 
 // Credential holds login/connect credentials.
 type Credential struct {
-	BaseStation   string // base station ID
-	PhoneSecret   string // phone secret
-	Phone         string // phone ID
-	PhonePassword string // phone password
-	UserPassword  string // user password
+	PhoneSecret   string `json:"phoneSecret,omitempty"` // phone secret
+	BaseStation   string `json:"bsid,omitempty"`        // base station ID
+	Phone         string `json:"phoneId,omitempty"`     // phone ID
+	PhonePassword string `json:"phonePassword,omitempty"`
+	UserPassword  string `json:"userPassword,omitempty"`
 }
 
 type requestConfig struct {
@@ -63,18 +68,12 @@ type genericRequest struct {
 	requestIfOnline bool // does this need to be "requested" via /app/res/request
 	dataPayload
 
-	BaseStation      string `json:"bsid"`
-	SessionID        string `json:"sessionId,omitempty"`
-	ProcessID        string `json:"processId,omitempty"`
-	SessionSignature string `json:"sessionSig,omitempty"`
-	PhoneSignature   string `json:"phoneSig,omitempty"`
-	Path             string `json:"path,omitempty"`
-
-	// connect only
-	UserId            string `json:"userId,omitempty"`
-	Phone             string `json:"phoneId,omitempty"`
-	PhonePassword     string `json:"phonePassword,omitempty"`
-	UserPassword      string `json:"userPassword,omitempty"`
+	Credential
+	SessionID         string `json:"sessionId,omitempty"`
+	ProcessID         string `json:"processId,omitempty"`
+	SessionSignature  string `json:"sessionSig,omitempty"`
+	PhoneSignature    string `json:"phoneSig,omitempty"`
+	Path              string `json:"path,omitempty"`
 	CommunicationType int    `json:"communicationType,omitempty"`
 }
 
@@ -185,9 +184,13 @@ func (dc *Conn) SimpleRequest(arg SimpleRequest) error {
 		log.Printf("sending url=%v json=%v", url, string(jsonBytes))
 	}
 
+	version := dc.Version
+	if version == "" {
+		version = DefaultVersion
+	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", fmt.Sprintf("sddAndroid-%s-LGE Nexus 5X(28)", dc.Version))
-	req.Header.Set("version", dc.Version)
+	req.Header.Set("User-Agent", fmt.Sprintf("sddAndroid-%s-LGE Nexus 5X(28)", version))
+	req.Header.Set("version", version)
 	req.Header.Set("platform", "android")
 
 	// Implicitly create unauthenticated client.
@@ -255,6 +258,11 @@ func (dc *Conn) genericRequest(greq *genericRequest) (*genericResponse, error) {
 		}
 		message.DecodedMessage = b
 
+		if message.ProcessID == "" {
+			dc.pendingMessages = append(dc.pendingMessages, message)
+			continue
+		}
+
 		// Got an inline response
 		if greq.ProcessID == message.ProcessID {
 			if message.ProcessState == nil || *message.ProcessState == 0 {
@@ -268,7 +276,6 @@ func (dc *Conn) genericRequest(greq *genericRequest) (*genericResponse, error) {
 
 		// Check if we're part of the pending set
 		dc.unresolvedMutex.Lock()
-
 		prev, ok := dc.unresolvedRPC[message.ProcessID]
 		if ok {
 			delete(dc.unresolvedRPC, message.ProcessID)
@@ -276,9 +283,11 @@ func (dc *Conn) genericRequest(greq *genericRequest) (*genericResponse, error) {
 			prev <- message
 			continue
 		}
-
 		dc.unresolvedMutex.Unlock()
-		dc.pendingMessages = append(dc.pendingMessages, message)
+
+		if dc.Debug {
+			log.Printf("dropping unknown response: %+v", message)
+		}
 	}
 
 	// fail if there's a message (this is not "messages", but rather, an error)
@@ -309,7 +318,6 @@ func (dc *Conn) signedRequest(conf requestConfig) (*genericRequest, error) {
 
 	dc.sequenceIDSuffix++ // increment to track replies so process is unique
 	greq := &genericRequest{
-		BaseStation:      dc.cred.BaseStation,
 		ProcessID:        fmt.Sprintf("%s-%d", dc.processID, dc.sequenceIDSuffix),
 		SessionID:        dc.sessionID,
 		SessionSignature: sessionSig.Update(nextAccess, encData),
@@ -322,6 +330,9 @@ func (dc *Conn) signedRequest(conf requestConfig) (*genericRequest, error) {
 		Path:            conf.path,
 		requestIfOnline: conf.requestIfOnline,
 	}
+	// only need BaseStation, not the rest of credential
+	greq.Credential.BaseStation = dc.cred.BaseStation
+
 	if dc.Debug {
 		log.Printf("generated req for path=%s id=%s", conf.path, greq.ProcessID)
 	}
@@ -342,13 +353,11 @@ func (dc *Conn) Connect(cred Credential) error {
 	dc.unresolvedRPC = make(map[string]chan *Message)
 
 	greq := &genericRequest{
-		BaseStation:       cred.BaseStation,
-		Phone:             cred.Phone,
-		PhonePassword:     cred.PhonePassword,
-		UserPassword:      cred.UserPassword,
+		Credential:        cred,
 		CommunicationType: 3, // 1 and 3 are valid
 		Path:              "app/connect",
 	}
+	greq.Credential.PhoneSecret = "" // not used
 
 	// create 'random' processID
 	now := time.Now()
@@ -377,14 +386,23 @@ func (dc *Conn) Connect(cred Credential) error {
 	return nil
 }
 
+// internalMessages does a messages poll, adding to any pending messages and resolving pending RPCs.
+func (dc *Conn) internalMessages() error {
+	dc.genericRequestMutex.Lock()
+	defer dc.genericRequestMutex.Unlock()
+
+	greq, err := dc.signedRequest(requestConfig{path: "app/res/messages"})
+	if err != nil {
+		return err
+	}
+	_, err = dc.genericRequest(greq)
+	return err
+}
+
 // Messages gets any pending status messages from the server.
 func (dc *Conn) Messages() ([]*Message, error) {
 	if len(dc.pendingMessages) == 0 {
-		greq, err := dc.signedRequest(requestConfig{path: "app/res/messages"})
-		if err != nil {
-			return nil, err
-		}
-		_, err = dc.genericRequest(greq)
+		err := dc.internalMessages()
 		if err != nil {
 			return nil, err
 		}
@@ -402,7 +420,7 @@ type RPC struct {
 }
 
 // Request makes a signed generic RPC and waits until its response is available.
-// In some cases this might rely on Messages() being called occasionally.
+// In some cases this will fetch messages repeatedly until a result is available.
 func (dc *Conn) RPC(rpc RPC) error {
 	var err error
 	var b []byte
@@ -422,31 +440,32 @@ func (dc *Conn) RPC(rpc RPC) error {
 		path = rpc.Path[1:]
 	}
 
-	// create/sign request
-	greq, err := dc.signedRequest(requestConfig{data: b, path: path, requestIfOnline: true})
-	if err != nil {
-		return err
-	}
+	// Wrap sign/send in inner fn so we can lock while it occurs.
+	resp, pid, err := (func() (*genericResponse, string, error) {
+		dc.genericRequestMutex.Lock()
+		defer dc.genericRequestMutex.Unlock()
 
-	resp, err := dc.genericRequest(greq)
+		// create/sign request
+		greq, err := dc.signedRequest(requestConfig{data: b, path: path, requestIfOnline: true})
+		if err != nil {
+			return nil, "", err
+		}
+
+		resp, err := dc.genericRequest(greq)
+		return resp, greq.ProcessID, err
+	}())
 	if err != nil {
 		return err
 	}
 
 	var responseBytes []byte
-
 	if resp.inlineResponse != nil {
 		responseBytes = resp.inlineResponse
 	} else {
-		ch := make(chan *Message)
-		dc.unresolvedMutex.Lock()
-		dc.unresolvedRPC[greq.ProcessID] = ch
-		dc.unresolvedMutex.Unlock()
-		if dc.Debug {
-			log.Printf("! Delaying for process=%v", greq.ProcessID)
+		responseBytes, err = dc.waitForPid(pid)
+		if err != nil {
+			return err
 		}
-		m := <-ch
-		responseBytes = m.DecodedMessage
 	}
 
 	// Unmarshal into generic response to see if we were a valid command
@@ -466,4 +485,45 @@ func (dc *Conn) RPC(rpc RPC) error {
 	}
 
 	return json.Unmarshal(responseBytes, rpc.Output)
+}
+
+func (dc *Conn) waitForPid(pid string) ([]byte, error) {
+	ch := make(chan *Message, 1) // must have a buffer
+	dc.unresolvedMutex.Lock()
+	dc.unresolvedRPC[pid] = ch
+	dc.unresolvedMutex.Unlock()
+	if dc.Debug {
+		log.Printf("! Delaying for process=%v", pid)
+	}
+
+	var calls int
+	ticks := 1
+
+	timeout := time.NewTimer(time.Second * 20)
+	tick := time.NewTicker(time.Millisecond * 350)
+	defer timeout.Stop()
+	defer tick.Stop()
+
+	for {
+		select {
+		case m := <-ch:
+			return m.DecodedMessage, nil
+		case <-tick.C:
+			ticks--
+			if ticks > 0 {
+				continue
+			}
+
+			err := dc.internalMessages()
+			if err != nil {
+				return nil, err
+			}
+
+			calls++
+			ticks = calls
+
+		case <-timeout.C:
+			return nil, ErrTimeout
+		}
+	}
 }
