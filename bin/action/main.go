@@ -13,6 +13,7 @@ var (
 	flagCredentialsPath = flag.String("creds", "", "path to credentials file")
 	flagHost            = flag.String("host", "192.168.3.205", "host to connect to")
 	flagCommand         = flag.Int("command", 0, "command to send")
+	flagDebug           = flag.Bool("debug", false, "debug")
 )
 
 func main() {
@@ -23,7 +24,7 @@ func main() {
 		log.Fatalf("can't open credentials file: %v %v", *flagCredentialsPath, err)
 	}
 
-	conn := dd.Conn{Host: *flagHost}
+	conn := dd.Conn{Host: *flagHost, Debug: *flagDebug}
 	err = conn.Connect(creds.Credential)
 	if err != nil {
 		log.Fatalf("failed to connect: %v", err)

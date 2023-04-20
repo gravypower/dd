@@ -383,6 +383,10 @@ func (dc *Conn) Connect(cred Credential) error {
 	dc.sessionSecret = []byte(gresp.SessionSecret)
 	dc.nextAccess = crd.UserAccess.NextAccess
 
+	if dc.Debug {
+		log.Printf("got sessionID=%v secret=%v next=%v", dc.sessionID, gresp.SessionSecret, crd.UserAccess.NextAccess)
+	}
+
 	return nil
 }
 
@@ -484,7 +488,10 @@ func (dc *Conn) RPC(rpc RPC) error {
 		return fmt.Errorf("got unhandled error calling path=%v code=%v note=%v", rpc.Path, output.Code, output.Description)
 	}
 
-	return json.Unmarshal(responseBytes, rpc.Output)
+	if rpc.Output != nil {
+		return json.Unmarshal(responseBytes, rpc.Output)
+	}
+	return nil
 }
 
 func (dc *Conn) waitForPid(pid string) ([]byte, error) {

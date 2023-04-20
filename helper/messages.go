@@ -1,26 +1,39 @@
 package helper
 
 import (
-	"log"
+	"context"
 	"time"
 
 	"github.com/samthor/dd"
 	ddapi "github.com/samthor/dd/api"
 )
 
-// LoopMessages loops over messages, fetching every few seconds and logging to screen.
-// It does not do anything more useful right now.
-func LoopMessages(conn *dd.Conn) {
+// LoopMessages loops over messages, fetching every few seconds and emitting to the channel.
+// It terminates if and when the context is stopped.
+func LoopMessages(ctx context.Context, conn *dd.Conn, ch chan<- ddapi.DoorStatus) error {
 	for {
 		messages, err := conn.Messages()
 		if err != nil {
-			log.Fatalf("Err fetching background messages: %v", err)
+			return err
 		}
 		for _, m := range messages {
 			var out ddapi.DoorStatus
-			m.Decode(&out)
-			log.Printf("Got status message: %+v", out)
+			err = m.Decode(&out)
+			if err != nil {
+				// Try to send all messages in case we got multiple.
+				ch <- out
+			}
 		}
-		time.Sleep(time.Second * 4)
+		if err != nil {
+			return err
+		}
+
+		timer := time.NewTimer(time.Second * 4)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			timer.Stop()
+			return nil
+		}
 	}
 }

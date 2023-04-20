@@ -58,7 +58,7 @@ func (ds *DoorStatus) IsAdmin() bool {
 	return len(ds.DeviceOrder) == 0 && len(ds.Users) > 0
 }
 
-// Get returns a DoorStatus by ID.
+// Get returns a DoorStatusDevice by ID.
 func (ds *DoorStatus) Get(id string) *DoorStatusDevice {
 	for i := range ds.Devices {
 		if ds.Devices[i].ID == id {
