@@ -81,3 +81,10 @@ func CommandForRatio(position int) int {
 		return 2 // open
 	}
 }
+
+const (
+	CommandStop  = 1
+	CommandBoop  = 5 // state machine button
+	CommandClose = 4
+	CommandOpen  = 2
+)

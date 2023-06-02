@@ -19,7 +19,7 @@ func LoopMessages(ctx context.Context, conn *dd.Conn, ch chan<- ddapi.DoorStatus
 		for _, m := range messages {
 			var out ddapi.DoorStatus
 			err = m.Decode(&out)
-			if err != nil {
+			if err == nil {
 				// Try to send all messages in case we got multiple.
 				ch <- out
 			}

@@ -49,12 +49,6 @@ func main() {
 	}
 	log.Printf("basic info: %+v", info)
 
-	// Fetch initial list of devices.
-	status, err := fetchStatus(&conn)
-	if err != nil {
-		log.Fatalf("Could not fetch initial statust: %v", err)
-	}
-
 	// Connect to MQTT and do/send things.
 	opts := mqtt.NewClientOptions()
 	opts.AddBroker(fmt.Sprintf("tcp://%s:%d", *flagMqtt, *flagMqttPort))
@@ -68,6 +62,7 @@ func main() {
 	// Recieve status updates forever.
 	statusCh := make(chan ddapi.DoorStatus)
 	go func() {
+		status := safeFetchStatus(&conn)
 		statusCh <- status // force initial status to be treated inline
 		err := helper.LoopMessages(context.Background(), &conn, statusCh)
 		if err != nil {
@@ -100,24 +95,22 @@ func main() {
 				log.Printf("got invalid payload in set: %v", err)
 				return
 			}
-			log.Printf("TODO: set payload %+v", payload)
-
-			var commandInput ddapi.CommandInput
-			commandInput.DeviceId = deviceId
-			commandInput.Action.Command = ddapi.CommandForRatio(payload.Position)
-			err = conn.RPC(dd.RPC{
-				Path:  "/app/res/action",
-				Input: commandInput,
-			})
-			if err != nil {
-				log.Fatalf("Could not perform action: %+v err=%v", commandInput, err)
+			if payload.Stop {
+				log.Printf("[%v]: stopping", deviceId)
+				// TODO: what
+				safeCommand(&conn, deviceId, ddapi.CommandStop)
+			} else if payload.Position != nil && *payload.Position > 0 {
+				log.Printf("[%v]: cowardly opening all the way for position=%v", deviceId, *payload.Position)
+				safeCommand(&conn, deviceId, ddapi.CommandOpen)
+			} else if payload.Position != nil {
+				log.Printf("[%v]: closing", deviceId)
+				safeCommand(&conn, deviceId, ddapi.CommandClose)
+			} else {
+				log.Printf("[%v]: got misunderstood payload, ignoring: %+v", deviceId, payload)
 			}
 
 		case "get":
-			status, err := fetchStatus(&conn)
-			if err != nil {
-				log.Fatalf("Could not fetch initial statust: %v", err)
-			}
+			status := safeFetchStatus(&conn)
 			d := status.Get(deviceId)
 			if d == nil {
 				log.Printf("Got request for unknown device: %s", deviceId)
@@ -135,17 +128,20 @@ func main() {
 		log.Fatalf("couldn't subscribe to topic=%s, err=%v", subscribeTopic, tok.Error())
 	}
 
+	log.Printf("waiting on status...")
 	for status := range statusCh {
+		log.Printf("announcing status: %+v", status)
 		for _, x := range status.Devices {
 			safePublish(mqttClient, x)
 		}
 	}
 }
 
-// safePublish sends a JSON-encoded payload for the given device and its status.
+// safePublish sends a JSON-encoded payload to MQTT for the given device and its status, as a general announcement.
+// Aborts if this fails.
 func safePublish(c mqtt.Client, d ddapi.DoorStatusDevice) {
 	topic := fmt.Sprintf("%s/%s", *flagMqttPrefix, d.ID)
-	payload := Payload{Position: d.Device.Position}
+	payload := Payload{Position: &d.Device.Position, FromController: true}
 	bytes, err := json.Marshal(payload)
 	if err != nil {
 		log.Fatalf("couldn't encode payload for mqtt: %v", err)
@@ -159,15 +155,36 @@ func safePublish(c mqtt.Client, d ddapi.DoorStatusDevice) {
 	}
 }
 
-func fetchStatus(conn *dd.Conn) (ddapi.DoorStatus, error) {
+// Fetches the current status from the device. Crashes on fail.
+func safeFetchStatus(conn *dd.Conn) ddapi.DoorStatus {
 	var status ddapi.DoorStatus
 	err := conn.RPC(dd.RPC{
 		Path:   "/app/res/devices/fetch",
 		Output: &status,
 	})
-	return status, err
+	if err != nil {
+		log.Fatalf("could not fetch status: %v", err)
+	}
+	return status
+}
+
+// Performs the given command. Crashes on fail.
+func safeCommand(conn *dd.Conn, deviceId string, command int) {
+	var commandInput ddapi.CommandInput
+	commandInput.DeviceId = deviceId
+	commandInput.Action.Command = command
+	err := conn.RPC(dd.RPC{
+		Path:  "/app/res/action",
+		Input: commandInput,
+	})
+	if err != nil {
+		log.Fatalf("Could not perform action: %+v err=%v", commandInput, err)
+	}
 }
 
 type Payload struct {
-	Position int `json:"position"`
+	FromController bool `json:"from_controller,omitempty"` // stub to force change
+	Position       *int `json:"position"`                  // reported by device
+	Stop           bool `json:"stop,omitempty"`            // can be triggered by caller
+	Active         bool `json:"active,omitempty"`          // whether it might be active (moving)
 }
