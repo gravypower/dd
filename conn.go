@@ -202,7 +202,7 @@ func (dc *Conn) SimpleRequest(arg SimpleRequest) error {
 
 	resp, err := dc.client.Do(req)
 	if err != nil {
-		return nil
+		return err
 	}
 	defer resp.Body.Close()
 
