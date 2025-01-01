@@ -15,9 +15,9 @@ import (
 )
 
 var (
-	flagCredentialsPath = flag.String("creds", "", "path to credentials file")
-	flagHost            = flag.String("host", "192.168.3.205", "host to connect to")
-	flagMqtt            = flag.String("mqtt", "mqtt.haus.samthor.au", "mqtt server")
+	flagCredentialsPath = flag.String("creds", "creds.json", "path to credentials file")
+	flagHost            = flag.String("host", "", "host to connect to")
+	flagMqtt            = flag.String("mqtt", "", "mqtt server")
 	flagMqttPort        = flag.Int("mqttPort", 1883, "mqtt port")
 	flagMqttPrefix      = flag.String("mqttPrefix", "dd-door", "prefix for mqtt")
 	flagDebug           = flag.Bool("debug", false, "debug mode")
@@ -98,13 +98,13 @@ func main() {
 			if payload.Stop {
 				log.Printf("[%v]: stopping", deviceId)
 				// TODO: what
-				safeCommand(&conn, deviceId, ddapi.CommandStop)
+				safeCommand(&conn, deviceId, ddapi.AvailableCommands.Stop)
 			} else if payload.Position != nil && *payload.Position > 0 {
 				log.Printf("[%v]: cowardly opening all the way for position=%v", deviceId, *payload.Position)
-				safeCommand(&conn, deviceId, ddapi.CommandOpen)
+				safeCommand(&conn, deviceId, ddapi.AvailableCommands.Open)
 			} else if payload.Position != nil {
 				log.Printf("[%v]: closing", deviceId)
-				safeCommand(&conn, deviceId, ddapi.CommandClose)
+				safeCommand(&conn, deviceId, ddapi.AvailableCommands.Close)
 			} else {
 				log.Printf("[%v]: got misunderstood payload, ignoring: %+v", deviceId, payload)
 			}

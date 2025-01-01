@@ -154,7 +154,7 @@ type SimpleRequest struct {
 	Output interface{}
 }
 
-// Performs a simple request to our device. Does not care about sessions.
+// SimpleRequest Performs a simple request to our device. Does not care about sessions.
 func (dc *Conn) SimpleRequest(arg SimpleRequest) error {
 	if len(arg.Path) > 0 && arg.Path[0] != '/' {
 		return fmt.Errorf("path must start with /, got: %v", arg.Path)
@@ -204,7 +204,12 @@ func (dc *Conn) SimpleRequest(arg SimpleRequest) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func(Body io.ReadCloser) {
+		err := Body.Close()
+		if err != nil {
+			log.Printf("failed to close response body: %v", err)
+		}
+	}(resp.Body)
 
 	// nb. we could use json.NewDecoder(..) here, but this way logging bytes is easy
 	responseBytes, err := io.ReadAll(resp.Body)
@@ -445,7 +450,7 @@ func (dc *Conn) RPC(rpc RPC) error {
 	}
 
 	// Wrap sign/send in inner fn so we can lock while it occurs.
-	resp, pid, err := (func() (*genericResponse, string, error) {
+	resp, pid, err := func() (*genericResponse, string, error) {
 		dc.genericRequestMutex.Lock()
 		defer dc.genericRequestMutex.Unlock()
 
@@ -457,7 +462,7 @@ func (dc *Conn) RPC(rpc RPC) error {
 
 		resp, err := dc.genericRequest(greq)
 		return resp, greq.ProcessID, err
-	}())
+	}()
 	if err != nil {
 		return err
 	}

@@ -10,14 +10,24 @@ import (
 )
 
 var (
-	flagCredentialsPath = flag.String("creds", "", "path to credentials file")
-	flagHost            = flag.String("host", "192.168.3.205", "host to connect to")
-	flagCommand         = flag.Int("command", 0, "command to send")
+	flagCredentialsPath = flag.String("creds", "creds.json", "path to credentials file")
+	flagHost            = flag.String("host", "", "host to connect to")
+	flagCommand         = flag.String("command", "", "command to send")
 	flagDebug           = flag.Bool("debug", false, "debug")
 )
 
 func main() {
 	flag.Parse()
+
+	var command, err = ddapi.ParseCommand(*flagCommand)
+
+	if err != nil {
+		log.Fatalf("could not find a suitable command for: %s", *flagCommand)
+	}
+
+	if *flagDebug {
+		log.Printf("found command: %v, mapped to int: %v", *flagCommand, command)
+	}
 
 	creds, err := helper.LoadCreds(*flagCredentialsPath)
 	if err != nil {
@@ -60,15 +70,18 @@ func main() {
 	// Send the requested command.
 	var commandInput ddapi.CommandInput
 	commandInput.DeviceId = deviceId
-	commandInput.Action.Command = *flagCommand
+	commandInput.Action.Command = command
 	var commandOutput ddapi.CommandOutput
 	err = conn.RPC(dd.RPC{
 		Path:   "/app/res/action",
 		Input:  &commandInput,
 		Output: &commandOutput,
 	})
+
 	if err != nil {
 		log.Fatalf("Could not do request: %v", err)
 	}
+
 	log.Printf("Got command response: %+v", commandOutput)
+
 }
