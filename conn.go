@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	RemoteAPIBase  = "https://version2.smartdoordevices.com"
+	RemoteAPIBase  = "version2.smartdoordevices.com"
 	SDKPort        = 8991
 	DefaultPort    = 8989
 	DefaultVersion = "2.21.1"
