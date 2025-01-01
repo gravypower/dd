@@ -1,0 +1,24 @@
+# https://developers.home-assistant.io/docs/add-ons/configuration#add-on-config
+name: dd add-on
+version: "1.0.0"
+slug: dd
+description: dd add-on
+url: "https://github.com/gravypower/dd/tree/main/dd"
+arch:
+  - armhf
+  - armv7
+  - aarch64
+  - amd64
+  - i386
+init: false
+map:
+  - data:rw
+options:
+  code: ""
+  password: ""
+  host: ""
+  mqttServer: ""
+  mqttPort: ""
+schema:
+  message: "str?"
+image: "ghcr.io/gravypower/{arch}-addon-dd"

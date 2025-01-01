@@ -1,0 +1,16 @@
+configuration:
+  code:
+    name: Code
+    description: share code.
+  password:
+    name: Password
+    description: password.
+  host:
+    name: Host
+    description: host to connect to.
+  mqttServer:
+    name: MQTT Server
+    description: MQTT Server.
+  mqttPort:
+    name: MQTT Port
+    description: MQTT Port.

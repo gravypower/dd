@@ -1,0 +1,4 @@
+# https://developers.home-assistant.io/docs/add-ons/repository#repository-configuration
+name: If you know, you know.
+url: 'https://github.com/gravypower/dd'
+maintainer: Awesome Maintainer <awesome@example.com>
