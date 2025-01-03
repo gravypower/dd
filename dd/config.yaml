@@ -15,7 +15,7 @@ arch:
   - amd64
   - i386
 init: true
-panel_icon: "mdi:garage-open",
+panel_icon: "mdi:garage-open"
 map:
   - type: homeassistant_config
     read_only: false
