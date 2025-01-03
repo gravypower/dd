@@ -79,6 +79,8 @@ jobs:
           go-version: '1.20.x'
       - name: Install dependencies
         run: go get .
+      - name: Set GOARCH for ${{ matrix.arch }}
+        run: echo "GOARCH=${{ matrix.arch }}" >> $GITHUB_ENV
       - name: Build register
         run:  |
           mkdir -p ./output
