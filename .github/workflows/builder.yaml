@@ -81,8 +81,10 @@ jobs:
       - name: Install dependencies
         run: go get .
 
-      - name: Set GOARCH for ${{ matrix.arch }}
-        run: echo "GOARCH=${{ matrix.arch }}" >> $GITHUB_ENV
+      - name: Set GOARCH for ${{ matrix.arch }} and GOOS=linux
+        run: |
+          echo "GOARCH=${{ matrix.arch }}" >> $GITHUB_ENV
+          echo "GOOS=linux" >> $GITHUB_ENV
 
       - name: Build register
         run:  |
