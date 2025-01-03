@@ -6,7 +6,10 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/samthor/dd"
@@ -19,9 +22,13 @@ var (
 	flagHost            = flag.String("host", "", "host to connect to")
 	flagMqtt            = flag.String("mqtt", "", "mqtt server")
 	flagMqttPort        = flag.Int("mqttPort", 1883, "mqtt port")
+	flagMqttUser        = flag.String("mqttUser", "", "mqtt user")
+	flagMqttPassword    = flag.String("mqttPassword", "", "mqtt password")
 	flagMqttPrefix      = flag.String("mqttPrefix", "dd-door", "prefix for mqtt")
 	flagDebug           = flag.Bool("debug", false, "debug mode")
 )
+
+var configuredDevices = make(map[string]bool)
 
 func main() {
 	flag.Parse()
@@ -54,10 +61,28 @@ func main() {
 	opts.AddBroker(fmt.Sprintf("tcp://%s:%d", *flagMqtt, *flagMqttPort))
 	opts.SetClientID("go_mqtt_client")
 
+	if *flagMqttUser != "" {
+		opts.SetUsername(*flagMqttUser)
+	}
+
+	if *flagMqttPassword != "" {
+		opts.SetPassword(*flagMqttPassword)
+	}
+
 	mqttClient := mqtt.NewClient(opts)
 	if token := mqttClient.Connect(); token.Wait() && token.Error() != nil {
 		log.Fatalf("failed to connect to mqtt: %s/%d %v", *flagMqtt, *flagMqttPort, err)
 	}
+
+	stopCh := make(chan os.Signal, 1)
+	signal.Notify(stopCh, os.Interrupt, syscall.SIGTERM)
+
+	go func() {
+		<-stopCh
+		log.Println("Shutting down gracefully...")
+		markAllOffline(mqttClient, *flagMqttPrefix)
+		os.Exit(0)
+	}()
 
 	// Recieve status updates forever.
 	statusCh := make(chan ddapi.DoorStatus)
@@ -130,9 +155,15 @@ func main() {
 
 	log.Printf("waiting on status...")
 	for status := range statusCh {
+
 		log.Printf("announcing status: %+v", status)
-		for _, x := range status.Devices {
-			safePublish(mqttClient, x)
+		for _, device := range status.Devices {
+			// Configure the entity only if needed
+			if !configuredDevices[device.ID] {
+				configureEntity(mqttClient, *flagMqttPrefix, device)
+			}
+			markOnline(mqttClient, *flagMqttPrefix, device.ID)
+			safePublish(mqttClient, device)
 		}
 	}
 }
@@ -140,7 +171,8 @@ func main() {
 // safePublish sends a JSON-encoded payload to MQTT for the given device and its status, as a general announcement.
 // Aborts if this fails.
 func safePublish(c mqtt.Client, d ddapi.DoorStatusDevice) {
-	topic := fmt.Sprintf("%s/%s", *flagMqttPrefix, d.ID)
+	topic := fmt.Sprintf("%s/%s/state", *flagMqttPrefix, d.ID)
+
 	payload := Payload{Position: &d.Device.Position, FromController: true}
 	bytes, err := json.Marshal(payload)
 	if err != nil {
@@ -179,6 +211,78 @@ func safeCommand(conn *dd.Conn, deviceId string, command int) {
 	})
 	if err != nil {
 		log.Fatalf("Could not perform action: %+v err=%v", commandInput, err)
+	}
+}
+
+func configureEntity(mqttClient mqtt.Client, prefix string, device ddapi.DoorStatusDevice) {
+	discoveryTopic := fmt.Sprintf("homeassistant/cover/%s/config", device.ID)
+
+	configPayload := map[string]interface{}{
+		"name":               device.Name, // Use device name dynamically
+		"command_topic":      fmt.Sprintf("%s/%s/command", prefix, device.ID),
+		"state_topic":        fmt.Sprintf("%s/%s/state", prefix, device.ID),
+		"position_topic":     fmt.Sprintf("%s/%s/position", prefix, device.ID),
+		"set_position_topic": fmt.Sprintf("%s/%s/set_position", prefix, device.ID),
+		"availability_topic": fmt.Sprintf("%s/%s/availability", prefix, device.ID),
+		"payload_open":       "open",
+		"payload_close":      "close",
+		"payload_stop":       "stop",
+		"state_open":         "open",
+		"state_closed":       "closed",
+		"state_stopped":      "stopped",
+		"device_class":       "garage",
+		"unique_id":          fmt.Sprintf("garage_door_%s", device.ID),
+	}
+
+	payload, err := json.Marshal(configPayload)
+	if err != nil {
+		log.Fatalf("Failed to encode discovery payload: %v", err)
+	}
+
+	tok := mqttClient.Publish(discoveryTopic, 0, true, payload)
+	tok.Wait()
+	if tok.Error() != nil {
+		log.Fatalf("Failed to publish discovery payload: %v", tok.Error())
+	}
+
+	// Mark the device as online
+	markOnline(mqttClient, prefix, device.ID)
+
+	configuredDevices[device.ID] = true
+	log.Printf("Device '%s' (ID: %s) has been configured.", device.Name, device.ID)
+}
+
+func removeEntity(mqttClient mqtt.Client, prefix, deviceID string) {
+	discoveryTopic := fmt.Sprintf("homeassistant/cover/%s/config", deviceID)
+	tok := mqttClient.Publish(discoveryTopic, 0, true, "")
+	tok.Wait()
+	if tok.Error() != nil {
+		log.Printf("Failed to remove entity for device %s: %v", deviceID, tok.Error())
+	} else {
+		log.Printf("Removed entity for device %s.", deviceID)
+	}
+	delete(configuredDevices, deviceID)
+}
+
+func markAllOffline(mqttClient mqtt.Client, prefix string) {
+	for deviceID := range configuredDevices {
+		availabilityTopic := fmt.Sprintf("%s/%s/availability", prefix, deviceID)
+		tok := mqttClient.Publish(availabilityTopic, 0, true, "offline")
+		tok.Wait()
+		if tok.Error() != nil {
+			log.Printf("Failed to mark device %s offline: %v", deviceID, tok.Error())
+		}
+	}
+}
+
+func markOnline(mqttClient mqtt.Client, prefix, deviceID string) {
+	availabilityTopic := fmt.Sprintf("%s/%s/availability", prefix, deviceID)
+	tok := mqttClient.Publish(availabilityTopic, 0, true, "online")
+	tok.Wait()
+	if tok.Error() != nil {
+		log.Printf("Failed to mark device %s online: %v", deviceID, tok.Error())
+	} else {
+		log.Printf("Marked device %s as online.", deviceID)
 	}
 }
 

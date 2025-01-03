@@ -1,19 +1,13 @@
 #!/usr/bin/with-contenv bashio
 # ==============================================================================
-# Start the example service
+# Start the dd service
 # s6-overlay docs: https://github.com/just-containers/s6-overlay
 # ==============================================================================
 
-# Add your code here
-
-# Declare variables
-declare message
-
-## Get the 'message' key from the user config options.
-message=$(bashio::config 'message')
-
-## Print the message the user supplied, defaults to "Hello World..."
-bashio::log.info "${message:="Hello World..."}"
+bashio::log.info "Starting dd..."
 
 ## Run your program
-exec /usr/bin/my_program
+if (bashio::config.is_empty 'mqtt' || ! (bashio::config.has_value 'mqtt.server' || bashio::config.has_value 'mqtt.user' || bashio::config.has_value 'mqtt.password')) && bashio::var.has_value "$(bashio::services 'mqtt')"; then
+  exec /usr/bin/haus -host "$(bashio::services 'mqtt' 'host')" -mqtt "$(bashio::services 'mqtt' 'port')" -mqttPort 1883 -mqttUser "$(bashio::services 'mqtt' 'password')" -mqttPassword "$(bashio::services 'mqtt' 'username')" -creds /config/creds.json
+fi
+
