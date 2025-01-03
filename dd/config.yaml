@@ -6,15 +6,13 @@ description: dd add-on
 url: "https://github.com/gravypower/dd/tree/main/dd"
 startup: services
 services:
-  mqtt: need
-boot: auto
+  - mqtt: need
 arch:
   - armhf
   - armv7
   - aarch64
   - amd64
   - i386
-init: true
 panel_icon: "mdi:garage-open"
 map:
   - type: homeassistant_config
