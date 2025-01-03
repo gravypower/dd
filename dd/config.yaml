@@ -3,7 +3,7 @@ name: dd add-on
 version: "0.0.1"
 slug: dd
 description: dd add-on
-url: "https://github.com/gravypower/dd/tree/main/dd"
+url: "https://github.com/gravypower/dd/tree/master/dd"
 startup: services
 services:
   - mqtt: need
