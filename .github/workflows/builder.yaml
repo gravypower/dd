@@ -59,7 +59,7 @@ jobs:
   build:
     needs: init
     runs-on: ubuntu-latest
-    #if: needs.init.outputs.changed == 'true'
+    if: needs.init.outputs.changed == 'true'
     name: Build ${{ matrix.arch }} ${{ matrix.addon }} add-on
     strategy:
       matrix:
@@ -77,18 +77,23 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.20.x'
+
       - name: Install dependencies
         run: go get .
+
       - name: Set GOARCH for ${{ matrix.arch }}
         run: echo "GOARCH=${{ matrix.arch }}" >> $GITHUB_ENV
+
       - name: Build register
         run:  |
           mkdir -p ./output
           go build -o ./output/register  ./bin/register/main.go
           go build -o ./output/action  ./bin/action/main.go
           go build -o ./output/haus  ./bin/haus/main.go
-      - name: copy exe
+
+      - name: copy build go apps
         run: cp ./output/* ./dd/rootfs/usr/bin/
+
       - name: Get information
         id: info
         uses: home-assistant/actions/helpers/info@master
@@ -111,6 +116,7 @@ jobs:
             echo "${{ matrix.arch }} is not a valid arch for ${{ matrix.addon }}, skipping build";
             echo "build_arch=false" >> $GITHUB_OUTPUT;
           fi
+
       - name: Login to GitHub Container Registry
         if: env.BUILD_ARGS != '--test'
         uses: docker/login-action@v3.3.0
