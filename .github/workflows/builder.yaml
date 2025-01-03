@@ -78,15 +78,37 @@ jobs:
         with:
           go-version: '1.20.x'
 
-      - name: Install dependencies
-        run: go get .
+      - name: Map architecture to GOARCH
+        id: map_arch
+        run: |
+          case "${{ matrix.arch }}" in
+          aarch64)
+           echo "GOARCH=arm64" >> $GITHUB_ENV
+           ;;
+          amd64)
+           echo "GOARCH=amd64" >> $GITHUB_ENV
+           ;;
+          armhf|armv7)
+           echo "GOARCH=arm" >> $GITHUB_ENV
+           ;;
+          i386)
+           echo "GOARCH=386" >> $GITHUB_ENV
+           ;;
+          *)
+           echo "Unsupported architecture: ${{ matrix.arch }}"
+           exit 1
+           ;;
+          esac
 
-      - name: Build exe for ${{ matrix.arch }}
-        run:  |
-          mkdir -p ./output
-          GOARCH=${{ matrix.arch }} go build -o ./output/register ./bin/register/main.go
-          GOARCH=${{ matrix.arch }} go build -o ./output/action ./bin/action/main.go
-          GOARCH=${{ matrix.arch }} go build -o ./output/haus ./bin/haus/main.go
+          - name: Install dependencies
+            run: go get .
+
+          - name: Build executables for ${{ matrix.arch }}
+            run: |
+              mkdir -p ./output
+              go build -o ./output/register ./bin/register/main.go
+              go build -o ./output/action ./bin/action/main.go
+              go build -o ./output/haus ./bin/haus/main.go
 
       - name: copy build go apps
         run: cp ./output/* ./dd/rootfs/usr/bin/
