@@ -79,7 +79,6 @@ jobs:
           go-version: '1.20.x'
 
       - name: Map architecture to GOARCH
-        id: map_arch
         run: |
           case "${{ matrix.arch }}" in
           aarch64)
@@ -100,15 +99,15 @@ jobs:
            ;;
           esac
 
-          - name: Install dependencies
-            run: go get .
+      - name: Install dependencies
+        run: go get .
 
-          - name: Build executables for ${{ matrix.arch }}
-            run: |
-              mkdir -p ./output
-              go build -o ./output/register ./bin/register/main.go
-              go build -o ./output/action ./bin/action/main.go
-              go build -o ./output/haus ./bin/haus/main.go
+      - name: Build executables for ${{ matrix.arch }}
+        run: |
+          mkdir -p ./output
+          go build -o ./output/register ./bin/register/main.go
+          go build -o ./output/action ./bin/action/main.go
+          go build -o ./output/haus ./bin/haus/main.go
 
       - name: copy build go apps
         run: cp ./output/* ./dd/rootfs/usr/bin/
