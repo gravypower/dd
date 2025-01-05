@@ -28,7 +28,7 @@ func LoopMessages(ctx context.Context, conn *dd.Conn, ch chan<- ddapi.DoorStatus
 			return err
 		}
 
-		timer := time.NewTimer(time.Second * 4)
+		timer := time.NewTimer(time.Second * 10)
 		select {
 		case <-timer.C:
 		case <-ctx.Done():

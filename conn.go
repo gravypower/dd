@@ -7,10 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
+	"os"
 	"sync"
 	"time"
+
+	"github.com/sirupsen/logrus"
 )
 
 const (
@@ -22,13 +24,23 @@ const (
 
 var (
 	ErrTimeout = errors.New("RPC call timeout")
+	logger     = logrus.New()
 )
+
+func init() {
+	logger.SetOutput(os.Stdout)
+	logger.SetFormatter(&logrus.TextFormatter{
+		FullTimestamp: true,
+		ForceColors:   true,
+	})
+	logger.SetLevel(logrus.InfoLevel)
+}
 
 // Conn is a connection to the service.
 type Conn struct {
 	Version     string // version number to send
 	Host        string // hostname
-	RequestMode bool   // whether to "request" changes, used for talking to online server
+	RequestMode bool   // whether to "request" changes, used for talking to an online server
 	Debug       bool   // whether to log debug
 
 	cred   Credential   // cached creds
@@ -37,8 +49,8 @@ type Conn struct {
 	processID      string // random process ID to use in requests
 	sessionID      string // session ID returned from server
 	nextAccess     int    // the next timestamp to use (millis)
-	sessionSecret  []byte // to calculate sessionSignature, from server
-	phoneSecret    []byte // to calculate phoneSignature, specified locally (md5 of raw)
+	sessionSecret  []byte // to calculate sessionSignature (from server)
+	phoneSecret    []byte // to calculate phoneSignature, derived from cred.PhoneSecret
 	phoneSecretRaw []byte // raw secret, UTF-8 bytes of string
 
 	sequenceIDSuffix int // incremented suffix (to track replies)
@@ -64,6 +76,7 @@ type requestConfig struct {
 	requestIfOnline bool // does this need to be "requested" via /app/res/request
 }
 
+// genericRequest is what we actually marshal as JSON for any request.
 type genericRequest struct {
 	requestIfOnline bool // does this need to be "requested" via /app/res/request
 	dataPayload
@@ -85,7 +98,7 @@ type genericResponse struct {
 	inlineResponse   []byte
 	dataPayload
 
-	// connect response
+	// Fields from a connect response
 	SessionID           string `json:"sessionId"`
 	IsBasestationOnline bool   `json:"isBasestationOnline"`
 	HubVersion          int    `json:"hubVersion"`
@@ -109,7 +122,7 @@ type Message struct {
 	AppTimeout     int    `json:"appTimeout"`
 	ProcessID      string `json:"processId"`
 	Sequence       int    `json:"sequence"`
-	ProcessState   *int   `json:"processState"` // nb. sometimes is unset, vs 0
+	ProcessState   *int   `json:"processState"` // nb. sometimes is unset
 	PhoneSignature string `json:"phoneSig"`
 	Type           int    `json:"type"`
 	dataPayload
@@ -154,7 +167,7 @@ type SimpleRequest struct {
 	Output interface{}
 }
 
-// SimpleRequest Performs a simple request to our device. Does not care about sessions.
+// SimpleRequest performs a simple request to our device, without session logic.
 func (dc *Conn) SimpleRequest(arg SimpleRequest) error {
 	if len(arg.Path) > 0 && arg.Path[0] != '/' {
 		return fmt.Errorf("path must start with /, got: %v", arg.Path)
@@ -166,13 +179,14 @@ func (dc *Conn) SimpleRequest(arg SimpleRequest) error {
 	}
 
 	var url string
-	if arg.Target == RemoteTarget {
+	switch arg.Target {
+	case RemoteTarget:
 		url = fmt.Sprintf("https://%s%s", RemoteAPIBase, arg.Path)
-	} else if arg.Target == SDKTarget {
+	case SDKTarget:
 		url = fmt.Sprintf("https://%s:%d%s", dc.Host, SDKPort, arg.Path)
-	} else if arg.Target == DefaultTarget {
+	case DefaultTarget:
 		url = fmt.Sprintf("https://%s:%d%s", dc.Host, DefaultPort, arg.Path)
-	} else {
+	default:
 		return fmt.Errorf("unknown target: %v", arg.Target)
 	}
 
@@ -180,8 +194,12 @@ func (dc *Conn) SimpleRequest(arg SimpleRequest) error {
 	if err != nil {
 		return err
 	}
+
 	if dc.Debug {
-		log.Printf("sending url=%v json=%v", url, string(jsonBytes))
+		logger.WithFields(logrus.Fields{
+			"url":     url,
+			"payload": string(jsonBytes),
+		}).Debug("Sending request")
 	}
 
 	version := dc.Version
@@ -193,9 +211,10 @@ func (dc *Conn) SimpleRequest(arg SimpleRequest) error {
 	req.Header.Set("version", version)
 	req.Header.Set("platform", "android")
 
-	// Implicitly create unauthenticated client.
+	// If we haven't yet created an HTTP client, do so now
 	if dc.client == nil {
 		customTransport := http.DefaultTransport.(*http.Transport).Clone()
+		// WARNING: For production, you should NOT use InsecureSkipVerify = true.
 		customTransport.TLSClientConfig.InsecureSkipVerify = true
 		dc.client = &http.Client{Transport: customTransport}
 	}
@@ -205,24 +224,27 @@ func (dc *Conn) SimpleRequest(arg SimpleRequest) error {
 		return err
 	}
 	defer func(Body io.ReadCloser) {
-		err := Body.Close()
-		if err != nil {
-			log.Printf("failed to close response body: %v", err)
+		if cerr := Body.Close(); cerr != nil {
+			logger.WithError(cerr).Error("failed to close response body")
 		}
 	}(resp.Body)
 
-	// nb. we could use json.NewDecoder(..) here, but this way logging bytes is easy
 	responseBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return err
 	}
+
 	if dc.Debug {
-		log.Printf("got raw response: (code=%v) %v", resp.StatusCode, string(responseBytes))
-		log.Printf("got response headers: %+v", resp.Header)
+		logger.WithFields(logrus.Fields{
+			"statusCode": resp.StatusCode,
+			"response":   string(responseBytes),
+		}).Debug("Received HTTP response")
+		logger.Debugf("Response headers: %+v", resp.Header)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("non-2xx status code for target=%v path=%v: %v (len=%d)", arg.Target, arg.Path, resp.Status, len(responseBytes))
+		return fmt.Errorf("non-2xx status code for target=%v path=%v: %v (len=%d)",
+			arg.Target, arg.Path, resp.Status, len(responseBytes))
 	}
 
 	return json.Unmarshal(responseBytes, arg.Output)
@@ -259,7 +281,10 @@ func (dc *Conn) genericRequest(greq *genericRequest) (*genericResponse, error) {
 			return nil, err
 		}
 		if dc.Debug {
-			log.Printf("got message: %+v %+v", message, string(b))
+			logger.WithFields(logrus.Fields{
+				"messageHeader": message,
+				"decoded":       string(b),
+			}).Debug("Got message from response")
 		}
 		message.DecodedMessage = b
 
@@ -274,8 +299,7 @@ func (dc *Conn) genericRequest(greq *genericRequest) (*genericResponse, error) {
 				gresp.inlineResponse = b
 				continue
 			}
-			// We're ignoring this because it's not yet complete
-			// TODO: check that the string makes sense?
+			// Not yet complete (ProcessState != 0), ignoring
 			continue
 		}
 
@@ -291,11 +315,11 @@ func (dc *Conn) genericRequest(greq *genericRequest) (*genericResponse, error) {
 		dc.unresolvedMutex.Unlock()
 
 		if dc.Debug {
-			log.Printf("dropping unknown response: %+v", message)
+			logger.Debugf("Dropping unknown response: %+v", message)
 		}
 	}
 
-	// fail if there's a message (this is not "messages", but rather, an error)
+	// fail if there's a server-reported error message
 	if gresp.Message != "" {
 		return nil, fmt.Errorf("got error message: %v", gresp.Message)
 	}
@@ -335,11 +359,14 @@ func (dc *Conn) signedRequest(conf requestConfig) (*genericRequest, error) {
 		Path:            conf.path,
 		requestIfOnline: conf.requestIfOnline,
 	}
-	// only need BaseStation, not the rest of credential
+	// only need the BaseStation, not the rest of the credential
 	greq.Credential.BaseStation = dc.cred.BaseStation
 
 	if dc.Debug {
-		log.Printf("generated req for path=%s id=%s", conf.path, greq.ProcessID)
+		logger.WithFields(logrus.Fields{
+			"path":      conf.path,
+			"processID": greq.ProcessID,
+		}).Debug("Generated signed request")
 	}
 	return greq, nil
 }
@@ -354,6 +381,13 @@ func (dc *Conn) Close() {
 
 // Connect passes credentials to the server and sets up secrets.
 func (dc *Conn) Connect(cred Credential) error {
+	// If dc.Debug == true, we allow Debug logs
+	if dc.Debug {
+		logger.SetLevel(logrus.DebugLevel)
+	} else {
+		logger.SetLevel(logrus.InfoLevel)
+	}
+
 	dc.cred = cred
 	dc.unresolvedRPC = make(map[string]chan *Message)
 
@@ -362,11 +396,14 @@ func (dc *Conn) Connect(cred Credential) error {
 		CommunicationType: 3, // 1 and 3 are valid
 		Path:              "app/connect",
 	}
-	greq.Credential.PhoneSecret = "" // not used
+	// The phoneSecret is not sent in the JSON body
+	greq.Credential.PhoneSecret = ""
 
 	// create 'random' processID
 	now := time.Now()
 	dc.processID = fmt.Sprintf("%d-E--%d", now.Unix(), now.Unix()*1e9-now.UnixNano())
+
+	// Derive or store the phone secrets
 	dc.phoneSecret = md5hash(cred.PhoneSecret)
 	dc.phoneSecretRaw = []byte(cred.PhoneSecret)
 
@@ -388,9 +425,14 @@ func (dc *Conn) Connect(cred Credential) error {
 	dc.sessionSecret = []byte(gresp.SessionSecret)
 	dc.nextAccess = crd.UserAccess.NextAccess
 
-	if dc.Debug {
-		log.Printf("got sessionID=%v secret=%v next=%v", dc.sessionID, gresp.SessionSecret, crd.UserAccess.NextAccess)
+	// Example of structured logging with a single field "basicInfo"
+	basicInfo := map[string]interface{}{
+		"sessionID": dc.sessionID,
+		"secret":    gresp.SessionSecret,
+		"next":      crd.UserAccess.NextAccess,
 	}
+	logger.WithField("basicInfo", basicInfo).
+		Info("Fetched basic information about the connection")
 
 	return nil
 }
@@ -411,8 +453,7 @@ func (dc *Conn) internalMessages() error {
 // Messages gets any pending status messages from the server.
 func (dc *Conn) Messages() ([]*Message, error) {
 	if len(dc.pendingMessages) == 0 {
-		err := dc.internalMessages()
-		if err != nil {
+		if err := dc.internalMessages(); err != nil {
 			return nil, err
 		}
 	}
@@ -429,7 +470,6 @@ type RPC struct {
 }
 
 // Request makes a signed generic RPC and waits until its response is available.
-// In some cases this will fetch messages repeatedly until a result is available.
 func (dc *Conn) RPC(rpc RPC) error {
 	var err error
 	var b []byte
@@ -454,7 +494,6 @@ func (dc *Conn) RPC(rpc RPC) error {
 		dc.genericRequestMutex.Lock()
 		defer dc.genericRequestMutex.Unlock()
 
-		// create/sign request
 		greq, err := dc.signedRequest(requestConfig{data: b, path: path, requestIfOnline: true})
 		if err != nil {
 			return nil, "", err
@@ -477,7 +516,7 @@ func (dc *Conn) RPC(rpc RPC) error {
 		}
 	}
 
-	// Unmarshal into generic response to see if we were a valid command
+	// Unmarshal to see if we got a code != 0
 	var output struct {
 		Code        int    `json:"code"`
 		Description string `json:"description"`
@@ -485,12 +524,16 @@ func (dc *Conn) RPC(rpc RPC) error {
 	err = json.Unmarshal(responseBytes, &output)
 	if err != nil {
 		if dc.Debug {
-			log.Printf("could not decode non-json: %v", string(resp.inlineResponse))
+			logger.WithFields(logrus.Fields{
+				"rawInlineResponse": string(responseBytes),
+				"error":             err,
+			}).Debug("Could not decode non-JSON response")
 		}
 		return err
 	}
 	if output.Code != 0 {
-		return fmt.Errorf("got unhandled error calling path=%v code=%v note=%v", rpc.Path, output.Code, output.Description)
+		return fmt.Errorf("got unhandled error calling path=%v code=%v note=%v",
+			rpc.Path, output.Code, output.Description)
 	}
 
 	if rpc.Output != nil {
@@ -499,20 +542,22 @@ func (dc *Conn) RPC(rpc RPC) error {
 	return nil
 }
 
+// waitForPid waits for the server to respond with a matching processID.
 func (dc *Conn) waitForPid(pid string) ([]byte, error) {
 	ch := make(chan *Message, 1) // must have a buffer
 	dc.unresolvedMutex.Lock()
 	dc.unresolvedRPC[pid] = ch
 	dc.unresolvedMutex.Unlock()
+
 	if dc.Debug {
-		log.Printf("! Delaying for process=%v", pid)
+		logger.Debugf("Delaying for process=%v", pid)
 	}
 
 	var calls int
 	ticks := 1
 
 	timeout := time.NewTimer(time.Second * 20)
-	tick := time.NewTicker(time.Millisecond * 350)
+	tick := time.NewTicker(time.Second)
 	defer timeout.Stop()
 	defer tick.Stop()
 
@@ -525,16 +570,14 @@ func (dc *Conn) waitForPid(pid string) ([]byte, error) {
 			if ticks > 0 {
 				continue
 			}
-
 			err := dc.internalMessages()
 			if err != nil {
 				return nil, err
 			}
-
 			calls++
 			ticks = calls
-
 		case <-timeout.C:
+			logger.WithField("pid", pid).Error("timeout for process")
 			return nil, ErrTimeout
 		}
 	}
