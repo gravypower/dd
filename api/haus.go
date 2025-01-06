@@ -34,17 +34,15 @@ func init() {
 func ConfigureDevice(client mqtt.Client, prefix string, device DoorStatusDevice, basicInfo BasicInfo) {
 	configTopic := fmt.Sprintf("homeassistant/cover/%s/config", device.ID)
 	configPayload := map[string]interface{}{
-		"name":                  device.Name,
-		"command_topic":         fmt.Sprintf(CommandTopicTemplate, prefix, device.ID),
-		"state_topic":           fmt.Sprintf(StateTopicTemplate, prefix, device.ID),
-		"availability_topic":    fmt.Sprintf(AvailabilityTopicTemplate, prefix, device.ID),
-		"payload_available":     "online",  // Define payload for "online" status
-		"payload_not_available": "offline", // Define payload for "offline" status
-		"device_class":          "garage",
-		"unique_id":             fmt.Sprintf("cover_%s", device.ID),
-		"retain":                true, // Ensure Home Assistant retains the latest state
-		"qos":                   1,    // Set Quality of Service level (0, 1, or 2)
-		"scan_interval":         10,
+		"name":               device.Name,
+		"command_topic":      fmt.Sprintf(CommandTopicTemplate, prefix, device.ID),
+		"state_topic":        fmt.Sprintf(StateTopicTemplate, prefix, device.ID),
+		"availability_topic": fmt.Sprintf(AvailabilityTopicTemplate, prefix, device.ID),
+		"device_class":       "garage",
+		"unique_id":          fmt.Sprintf("cover_%s", device.ID),
+		"retain":             true, // Ensure Home Assistant retains the latest state
+		"qos":                1,    // Set Quality of Service level (0, 1, or 2)
+		"scan_interval":      10,
 		"device": map[string]interface{}{
 			"identifiers":  []string{fmt.Sprintf("garage_door_%s", device.ID)},
 			"name":         basicInfo.Name,
@@ -55,7 +53,7 @@ func ConfigureDevice(client mqtt.Client, prefix string, device DoorStatusDevice,
 	logger.WithFields(logrus.Fields{
 		"configTopic":   configTopic,
 		"configPayload": configPayload,
-	}).Debug("configTopic")
+	}).Debug("configuring device")
 
 	bytes, err := json.Marshal(configPayload)
 	if err != nil {
@@ -66,6 +64,8 @@ func ConfigureDevice(client mqtt.Client, prefix string, device DoorStatusDevice,
 	if tok.Error() != nil {
 		logger.WithField("err", tok.Error()).Fatal("couldn't publish config")
 	}
+
+	ConfiguredDevices[device.ID] = true
 }
 
 func RemoveEntity(mqttClient mqtt.Client, deviceID string) {
@@ -84,6 +84,7 @@ func RemoveEntity(mqttClient mqtt.Client, deviceID string) {
 }
 
 func MarkAllOffline(mqttClient mqtt.Client, prefix string) {
+	logger.WithField("ConfiguredDevices", ConfiguredDevices).Info("Marking devices as offline")
 	for deviceID := range ConfiguredDevices {
 		availabilityTopic := fmt.Sprintf(AvailabilityTopicTemplate, prefix, deviceID)
 		tok := mqttClient.Publish(availabilityTopic, 0, true, "offline")
@@ -94,7 +95,10 @@ func MarkAllOffline(mqttClient mqtt.Client, prefix string) {
 				"err":      tok.Error(),
 			}).Error("Failed to mark device offline")
 		} else {
-			logger.WithField("deviceID", deviceID).Info("Marked device as offline")
+			logger.WithFields(logrus.Fields{
+				"deviceID":          deviceID,
+				"availabilityTopic": availabilityTopic,
+			}).Info("Marked device as offline")
 		}
 	}
 }
@@ -109,6 +113,9 @@ func MarkOnline(mqttClient mqtt.Client, prefix, deviceID string) {
 			"err":      tok.Error(),
 		}).Error("Failed to mark device online")
 	} else {
-		logger.WithField("deviceID", deviceID).Info("Marked device as online")
+		logger.WithFields(logrus.Fields{
+			"deviceID":          deviceID,
+			"availabilityTopic": availabilityTopic,
+		}).Info("Marked device as online")
 	}
 }

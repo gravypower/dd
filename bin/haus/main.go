@@ -86,6 +86,8 @@ func main() {
 		for _, device := range status.Devices {
 			if !ddapi.ConfiguredDevices[device.ID] {
 				ddapi.ConfigureDevice(mqttClient, *flagMqttPrefix, device, basicInfo)
+			} else {
+				logger.WithField("deviceID", device.ID).Info("Devide already configured")
 			}
 			ddapi.MarkOnline(mqttClient, *flagMqttPrefix, device.ID)
 			safePublish(mqttClient, device)
@@ -155,6 +157,7 @@ func handleMQTTMessage(client mqtt.Client, message mqtt.Message, conn *dd.Conn, 
 	case "set":
 		handleSetCommand(conn, deviceID, message.Payload())
 	case "state":
+		logger.WithField("message", message).Debug("handleMQTTMessage safeFetchStatus")
 		status := safeFetchStatus(conn)
 		device := status.Get(deviceID)
 		if device == nil {
