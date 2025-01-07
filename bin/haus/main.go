@@ -60,8 +60,10 @@ func main() {
 	mqttClient := connectToMQTT(*flagMqtt, *flagMqttUser, *flagMqttPassword, *flagMqttPort)
 	defer mqttClient.Disconnect(250)
 
+	mqttHandler := ddapi.NewMQTTHandler(mqttClient, logger)
+
 	if *flagRemoveEntity != "" {
-		ddapi.RemoveEntity(mqttClient, *flagRemoveEntity)
+		ddapi.RemoveEntity(mqttHandler, *flagRemoveEntity)
 		return
 	}
 
@@ -70,27 +72,27 @@ func main() {
 
 	go func() {
 		<-stopCh
-		logger.Info("Shutting down gracefully...")
-		ddapi.MarkAllOffline(mqttClient, *flagMqttPrefix)
+		logger.Info("Shutting down gracefully.")
+		ddapi.MarkAllOffline(mqttHandler, *flagMqttPrefix)
 		os.Exit(0)
 	}()
 
 	statusCh := make(chan ddapi.DoorStatus)
 	go handleStatusUpdates(&conn, statusCh)
 
-	subscribeToMQTT(mqttClient, *flagMqttPrefix, &conn, statusCh)
+	subscribeToMQTT(mqttHandler, *flagMqttPrefix, &conn, statusCh)
 
-	logger.Info("Waiting on status updates...")
+	logger.Info("Waiting on status updates.")
 	for status := range statusCh {
 		logger.WithField("status", status).Info("Announcing status")
 		for _, device := range status.Devices {
 			if !ddapi.ConfiguredDevices[device.ID] {
-				ddapi.ConfigureDevice(mqttClient, *flagMqttPrefix, device, basicInfo)
+				ddapi.ConfigureDevice(mqttHandler, *flagMqttPrefix, device, basicInfo)
 			} else {
-				logger.WithField("deviceID", device.ID).Info("Devide already configured")
+				logger.WithField("deviceID", device.ID).Info("Device already configured")
 			}
-			ddapi.MarkOnline(mqttClient, *flagMqttPrefix, device.ID)
-			safePublish(mqttClient, device)
+			ddapi.MarkOnline(mqttHandler, *flagMqttPrefix, device.ID)
+			ddapi.PublishDoorState(mqttHandler, *flagMqttPrefix, device.ID, device.Device.Position)
 		}
 	}
 }
@@ -103,7 +105,7 @@ func fetchBasicInfo(conn *dd.Conn) ddapi.BasicInfo {
 		Output: &info,
 	})
 	if err != nil {
-		logger.Fatalf("could not get basic info: %v", err)
+		logger.WithError(err).Fatalf("could not get basic info")
 	}
 	return info
 }
@@ -122,26 +124,25 @@ func connectToMQTT(broker, user, password string, port int) mqtt.Client {
 
 	client := mqtt.NewClient(opts)
 	if token := client.Connect(); token.Wait() && token.Error() != nil {
-		logger.Fatalf("failed to connect to mqtt: %v", token.Error())
+		logger.WithError(token.Error()).Fatalf("failed to connect to mqtt")
 	}
 	return client
 }
 
-func subscribeToMQTT(client mqtt.Client, prefix string, conn *dd.Conn, statusCh chan ddapi.DoorStatus) {
+func subscribeToMQTT(handler *ddapi.MQTTHandler, prefix string, conn *dd.Conn, statusCh chan ddapi.DoorStatus) {
 	subscribeTopic := fmt.Sprintf("%s/#", prefix)
-	token := client.Subscribe(subscribeTopic, 0, func(c mqtt.Client, m mqtt.Message) {
+	err := handler.Subscribe(subscribeTopic, 0, func(c mqtt.Client, m mqtt.Message) {
 		if m.Retained() {
 			return
 		}
-		handleMQTTMessage(c, m, conn, statusCh)
+		handleMQTTMessage(handler, m, conn, statusCh)
 	})
-	<-token.Done()
-	if token.Error() != nil {
-		logger.Fatalf("couldn't subscribe to topic=%s, err=%v", subscribeTopic, token.Error())
+	if err != nil {
+		logger.WithError(err).WithField("subscribeTopic", subscribeTopic).Fatalf("couldn't subscribe to topic")
 	}
 }
 
-func handleMQTTMessage(client mqtt.Client, message mqtt.Message, conn *dd.Conn, statusCh chan ddapi.DoorStatus) {
+func handleMQTTMessage(handler *ddapi.MQTTHandler, message mqtt.Message, conn *dd.Conn, statusCh chan ddapi.DoorStatus) {
 	parts := strings.Split(message.Topic(), "/")
 	if len(parts) != 3 || parts[2] == "" {
 		return
@@ -154,7 +155,7 @@ func handleMQTTMessage(client mqtt.Client, message mqtt.Message, conn *dd.Conn, 
 	}).Info("Received MQTT request")
 
 	switch cmd {
-	case "set":
+	case "command":
 		handleSetCommand(conn, deviceID, message.Payload())
 	case "state":
 		logger.WithField("message", message).Debug("handleMQTTMessage safeFetchStatus")
@@ -164,11 +165,14 @@ func handleMQTTMessage(client mqtt.Client, message mqtt.Message, conn *dd.Conn, 
 			logger.WithField("deviceID", deviceID).Warn("Received request for unknown device")
 			return
 		}
-		safePublish(client, *device)
+		ddapi.PublishDoorState(handler, *flagMqttPrefix, device.ID, device.Device.Position)
 	case "availability":
-		ddapi.MarkOnline(client, *flagMqttPrefix, deviceID)
+		ddapi.MarkOnline(handler, *flagMqttPrefix, deviceID)
 	default:
-		logger.WithField("command", cmd).Warn("Unknown command received. Expected commands are 'set', 'state', or 'availability'")
+		logger.WithFields(logrus.Fields{
+			"command": cmd,
+			"Payload": message.Payload(),
+		}).Warn("Unknown command received. Expected commands are 'set', 'state', or 'availability'")
 	}
 }
 
@@ -201,20 +205,6 @@ func handleStatusUpdates(conn *dd.Conn, statusCh chan ddapi.DoorStatus) {
 	statusCh <- status
 	if err := helper.LoopMessages(context.Background(), conn, statusCh); err != nil {
 		logger.WithField("error", err).Fatal("Error reading messages")
-	}
-}
-
-func safePublish(client mqtt.Client, device ddapi.DoorStatusDevice) {
-	topic := fmt.Sprintf(ddapi.StateTopicTemplate, *flagMqttPrefix, device.ID)
-	payload := Payload{Position: &device.Device.Position, FromController: true}
-	bytes, err := json.Marshal(payload)
-	if err != nil {
-		logger.WithField("error", err).Fatal("Couldn't encode payload")
-	}
-	tok := client.Publish(topic, 0, false, bytes)
-	<-tok.Done()
-	if tok.Error() != nil {
-		logger.WithField("error", tok.Error()).Fatal("Couldn't publish payload")
 	}
 }
 
