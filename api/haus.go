@@ -35,28 +35,28 @@ func init() {
 
 // MQTTHandler centralizes MQTT operations
 type MQTTHandler struct {
-	client mqtt.Client
-	mutex  sync.Mutex
-	logger *logrus.Logger
+	Client mqtt.Client
+	Mutex  sync.Mutex
+	Logger *logrus.Logger
 }
 
 // NewMQTTHandler creates a new MQTTHandler instance
 func NewMQTTHandler(client mqtt.Client, logger *logrus.Logger) *MQTTHandler {
 	return &MQTTHandler{
-		client: client,
-		logger: logger,
+		Client: client,
+		Logger: logger,
 	}
 }
 
 // Publish safely publishes a message to MQTT with a timeout
 func (h *MQTTHandler) Publish(topic string, qos byte, retained bool, payload interface{}) error {
-	h.mutex.Lock()
-	defer h.mutex.Unlock()
+	h.Mutex.Lock()
+	defer h.Mutex.Unlock()
 
-	tok := h.client.Publish(topic, qos, retained, payload)
+	tok := h.Client.Publish(topic, qos, retained, payload)
 	if ok := tok.WaitTimeout(3 * time.Second); !ok {
 		err := tok.Error()
-		h.logger.WithFields(logrus.Fields{
+		h.Logger.WithFields(logrus.Fields{
 			"topic":   topic,
 			"payload": payload,
 			"error":   err,
@@ -64,14 +64,14 @@ func (h *MQTTHandler) Publish(topic string, qos byte, retained bool, payload int
 		return err
 	}
 	if err := tok.Error(); err != nil {
-		h.logger.WithFields(logrus.Fields{
+		h.Logger.WithFields(logrus.Fields{
 			"topic":   topic,
 			"payload": payload,
 			"error":   err,
 		}).Error("Failed to publish")
 		return err
 	}
-	h.logger.WithFields(logrus.Fields{
+	h.Logger.WithFields(logrus.Fields{
 		"topic":   topic,
 		"payload": payload,
 	}).Info("Message published successfully")
@@ -80,25 +80,25 @@ func (h *MQTTHandler) Publish(topic string, qos byte, retained bool, payload int
 
 // Subscribe subscribes to a topic with the provided callback and ensures thread safety
 func (h *MQTTHandler) Subscribe(topic string, qos byte, callback mqtt.MessageHandler) error {
-	h.mutex.Lock()
-	defer h.mutex.Unlock()
+	h.Mutex.Lock()
+	defer h.Mutex.Unlock()
 
-	tok := h.client.Subscribe(topic, qos, callback)
+	tok := h.Client.Subscribe(topic, qos, callback)
 	if ok := tok.WaitTimeout(3 * time.Second); !ok {
-		h.logger.WithFields(logrus.Fields{
+		h.Logger.WithFields(logrus.Fields{
 			"topic": topic,
 		}).Error("Subscription timed out")
 		return tok.Error()
 	}
 	if err := tok.Error(); err != nil {
-		h.logger.WithFields(logrus.Fields{
+		h.Logger.WithFields(logrus.Fields{
 			"topic": topic,
 			"error": err,
 		}).Error("Failed to subscribe")
 		return err
 	}
 
-	h.logger.WithFields(logrus.Fields{
+	h.Logger.WithFields(logrus.Fields{
 		"topic": topic,
 	}).Info("Successfully subscribed to topic")
 	return nil
@@ -154,23 +154,22 @@ func RemoveEntity(handler *MQTTHandler, deviceID string) {
 	delete(ConfiguredDevices, deviceID)
 }
 
-// MarkAllOffline marks all configured devices as offline
-func MarkAllOffline(handler *MQTTHandler, prefix string) {
-	logger.WithField("ConfiguredDevices", ConfiguredDevices).Info("Marking devices as offline")
-	for deviceID := range ConfiguredDevices {
-		availabilityTopic := fmt.Sprintf(AvailabilityTopicTemplate, prefix, deviceID)
-		if err := handler.Publish(availabilityTopic, 0, false, "offline"); err != nil {
-			logger.WithFields(logrus.Fields{
-				"deviceID": deviceID,
-				"error":    err,
-			}).Error("Failed to mark device offline")
-		} else {
-			logger.WithFields(logrus.Fields{
-				"deviceID":          deviceID,
-				"availabilityTopic": availabilityTopic,
-			}).Info("Marked device as offline")
-		}
+// MarkOffline marks all configured devices as offline
+func MarkOffline(handler *MQTTHandler, prefix string, deviceID string) {
+	logger.WithField("deviceID", deviceID).Info("Marking device as offline")
+	availabilityTopic := fmt.Sprintf(AvailabilityTopicTemplate, prefix, deviceID)
+	if err := handler.Publish(availabilityTopic, 0, false, "offline"); err != nil {
+		logger.WithFields(logrus.Fields{
+			"deviceID": deviceID,
+			"error":    err,
+		}).Error("Failed to mark device offline")
+	} else {
+		logger.WithFields(logrus.Fields{
+			"deviceID":          deviceID,
+			"availabilityTopic": availabilityTopic,
+		}).Info("Marked device as offline")
 	}
+
 }
 
 // MarkOnline marks a specific device as online

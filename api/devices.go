@@ -1,5 +1,7 @@
 package api
 
+import "github.com/samthor/dd"
+
 // DoorStatusDevice is the status of a single device.
 type DoorStatusDevice struct {
 	ID           string `json:"deviceId"`
@@ -80,4 +82,16 @@ func CommandForRatio(position int) int {
 	} else {
 		return 2 // open
 	}
+}
+
+func SafeFetchStatus(conn *dd.Conn) DoorStatus {
+	var status DoorStatus
+	err := conn.RPC(dd.RPC{
+		Path:   "/app/res/devices/fetch",
+		Output: &status,
+	})
+	if err != nil {
+		logger.WithField("error", err).Fatal("Could not fetch status")
+	}
+	return status
 }
