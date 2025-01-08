@@ -10,7 +10,6 @@ import (
 	"syscall"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
-	"github.com/looplab/fsm"
 	"github.com/samthor/dd"
 	ddapi "github.com/samthor/dd/api"
 	"github.com/samthor/dd/helper"
@@ -32,15 +31,6 @@ var (
 	flagRemoveEntity    = flag.String("removeEntity", "", "entity to remove from haus")
 	flagDebug           = flag.Bool("debug", false, "debug mode")
 )
-
-// DeviceFSM encapsulates a state machine for a device
-type DeviceFSM struct {
-	ID          string
-	FSM         *fsm.FSM
-	Conn        *dd.Conn
-	mqttHandler *ddapi.MQTTHandler
-	State       string // Current state for additional tracking if needed
-}
 
 func init() {
 	logger.SetOutput(os.Stdout)
@@ -77,32 +67,35 @@ func main() {
 	basicInfo := ddapi.FetchBasicInfo(&conn)
 	logger.WithField("basicInfo", basicInfo).Info("Fetched basic information about the connection")
 
-	// Map to store FSMs for devices
-	deviceFSMs := make(map[string]*DeviceFSM)
-
 	stopCh := make(chan os.Signal, 1)
 	signal.Notify(stopCh, os.Interrupt, syscall.SIGTERM)
 
-	// Ensure resources are cleaned up on shutdown
-	defer func() {
+	// Main application logic...
+
+	// Wait for the termination signal
+	go func() {
+		<-stopCh
+		logger.Info("Termination signal received")
+		// Ensure resources are cleaned up
 		logger.Info("Shutting down gracefully")
-		for deviceID, fsm := range deviceFSMs {
+		for deviceID, fsm := range ddapi.DeviceFSMs {
 			logger.Infof("Shutting down device: %s", deviceID)
 			err := fsm.FSM.Event(context.Background(), "go_offline")
 			if err != nil {
-				logger.WithError(err).Errorf("Failed to set device %s to offline", deviceID)
+				logger.WithField("deviceID", deviceID).WithError(err).Error("Failed to set device to offline")
 			} else {
-				logger.Infof("Device %s successfully set to offline", deviceID)
+				logger.WithField("deviceID", deviceID).Info("Device successfully set to offline")
 			}
 		}
 		mqttClient.Disconnect(250)
+		os.Exit(0)
 	}()
 
 	statusCh := make(chan ddapi.DoorStatus)
 	go handleStatusUpdates(&conn, statusCh)
 
 	// Subscribe to MQTT
-	subscribeToMQTT(mqttHandler, *flagMqttPrefix, deviceFSMs, &conn)
+	subscribeToMQTT(mqttHandler, *flagMqttPrefix)
 
 	logger.Info("Waiting for MQTT messages...")
 	logger.Info("Waiting on status updates...")
@@ -110,73 +103,22 @@ func main() {
 	for status := range statusCh {
 		logger.WithField("status", status).Info("Announcing status")
 		for _, device := range status.Devices {
-			if !ddapi.ConfiguredDevices[device.ID] {
-				ddapi.ConfigureDevice(mqttHandler, *flagMqttPrefix, device, basicInfo)
+			deviceFSM, exists := ddapi.DeviceFSMs[device.ID]
+			if !exists {
+				deviceFSM = ddapi.ConfigureDevice(mqttHandler, &conn, *flagMqttPrefix, device, basicInfo)
 			} else {
 				logger.WithField("deviceID", device.ID).Info("Device already configured")
 			}
-			ddapi.MarkOnline(mqttHandler, *flagMqttPrefix, device.ID)
 
-			// Retrieve or create the FSM for the device
-			deviceFSM, exists := deviceFSMs[device.ID]
-			if !exists {
-				deviceFSM = NewDeviceFSM(device.ID, &conn, mqttHandler)
-				deviceFSMs[device.ID] = deviceFSM
+			err := deviceFSM.FSM.Event(context.Background(), "go_online")
+			if err != nil {
+				logger.WithError(err).Error("Failed to process 'go_online' event")
 			}
 
 			ddapi.PublishDoorState(mqttHandler, *flagMqttPrefix, device.ID, device.Device.Position)
 		}
 	}
 
-}
-
-// NewDeviceFSM initializes the FSM for a specific device
-func NewDeviceFSM(deviceID string, conn *dd.Conn, mqttHandler *ddapi.MQTTHandler) *DeviceFSM {
-	return &DeviceFSM{
-		ID:          deviceID,
-		Conn:        conn,
-		mqttHandler: mqttHandler,
-		FSM: fsm.NewFSM(
-			"online",
-			fsm.Events{
-				{Name: "go_online", Src: []string{"offline"}, Dst: "online"},
-				{Name: "go_offline", Src: []string{"online", "opening", "closing", "open", "closed"}, Dst: "offline"},
-				{Name: "open", Src: []string{"closed"}, Dst: "opening"},
-				{Name: "close", Src: []string{"open"}, Dst: "closing"},
-				{Name: "opened", Src: []string{"opening"}, Dst: "open"},
-				{Name: "closed", Src: []string{"closing"}, Dst: "closed"},
-				{Name: "stop", Src: []string{"opening", "closing"}, Dst: "stopped"},
-			},
-			fsm.Callbacks{
-				"enter_online": func(ctx context.Context, e *fsm.Event) {
-					logger.WithField("deviceID", deviceID).Info("Device is online")
-					ddapi.MarkOnline(mqttHandler, *flagMqttPrefix, deviceID)
-				},
-				"enter_offline": func(ctx context.Context, e *fsm.Event) {
-					ddapi.MarkOffline(mqttHandler, *flagMqttPrefix, deviceID)
-					logger.WithField("deviceID", deviceID).Info("Device is offline")
-				},
-				"enter_opening": func(ctx context.Context, e *fsm.Event) {
-					logger.WithField("deviceID", deviceID).Info("Device is opening")
-					ddapi.SafeCommand(conn, deviceID, ddapi.AvailableCommands.Open)
-				},
-				"enter_closing": func(ctx context.Context, e *fsm.Event) {
-					logger.WithField("deviceID", deviceID).Info("Device is closing")
-					ddapi.SafeCommand(conn, deviceID, ddapi.AvailableCommands.Close)
-				},
-				"enter_stopped": func(ctx context.Context, e *fsm.Event) {
-					logger.WithField("deviceID", deviceID).Info("Device is stopping")
-					ddapi.SafeCommand(conn, deviceID, ddapi.AvailableCommands.Stop)
-				},
-				"enter_open": func(ctx context.Context, e *fsm.Event) {
-					logger.WithField("deviceID", deviceID).Info("Device is fully open")
-				},
-				"enter_closed": func(ctx context.Context, e *fsm.Event) {
-					logger.WithField("deviceID", deviceID).Info("Device is fully closed")
-				},
-			},
-		),
-	}
 }
 
 // Connect to MQTT broker
@@ -200,10 +142,10 @@ func connectToMQTT(broker, user, password string, port int) mqtt.Client {
 }
 
 // Subscribe to MQTT topics
-func subscribeToMQTT(mqttHandler *ddapi.MQTTHandler, prefix string, deviceFSMs map[string]*DeviceFSM, conn *dd.Conn) {
+func subscribeToMQTT(mqttHandler *ddapi.MQTTHandler, prefix string) {
 	topic := fmt.Sprintf("%s/#", prefix)
 	token := mqttHandler.Client.Subscribe(topic, 0, func(client mqtt.Client, msg mqtt.Message) {
-		handleMQTTMessage(deviceFSMs, msg.Topic(), msg.Payload(), conn)
+		handleMQTTMessage(msg.Topic(), msg.Payload())
 	})
 	if token.Wait() && token.Error() != nil {
 		logger.WithError(token.Error()).Fatal("Failed to subscribe to MQTT topic")
@@ -212,7 +154,7 @@ func subscribeToMQTT(mqttHandler *ddapi.MQTTHandler, prefix string, deviceFSMs m
 }
 
 // Handle incoming MQTT messages
-func handleMQTTMessage(deviceFSMs map[string]*DeviceFSM, topic string, payload []byte, conn *dd.Conn) {
+func handleMQTTMessage(topic string, payload []byte) {
 	parts := strings.Split(topic, "/")
 	if len(parts) < 3 {
 		logger.WithField("topic", topic).Warn("Invalid topic format")
@@ -222,10 +164,15 @@ func handleMQTTMessage(deviceFSMs map[string]*DeviceFSM, topic string, payload [
 	command := strings.ToUpper(string(payload))
 
 	deviceID := parts[1]
-	deviceFSM, exists := deviceFSMs[deviceID]
+	deviceFSM, exists := ddapi.DeviceFSMs[deviceID]
 
 	if !exists {
-		logger.WithField("device", deviceID).Warn("Device not exists")
+		logger.WithField(
+			"device",
+			deviceID).WithField(
+			"DeviceFSMs",
+			ddapi.DeviceFSMs).Fatal(
+			"Device not exists")
 	}
 
 	switch command {
@@ -255,7 +202,9 @@ func handleMQTTMessage(deviceFSMs map[string]*DeviceFSM, topic string, payload [
 			logger.WithError(err).Error("Failed to process 'stop' event")
 		}
 	default:
-		logger.Warnf("Unknown command for device %s: %s", deviceID, command)
+		logger.WithFields(logrus.Fields{
+			"deviceID": deviceID,
+			"command":  command}).Warn("Unknown command for device")
 	}
 }
 
