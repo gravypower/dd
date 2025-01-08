@@ -4,6 +4,7 @@ go 1.20
 
 require (
 	github.com/eclipse/paho.mqtt.golang v1.4.2
+	github.com/looplab/fsm v1.0.2
 	github.com/sirupsen/logrus v1.9.3
 )
 

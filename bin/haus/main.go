@@ -2,20 +2,18 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
-	"os"
-	"os/signal"
-	"strings"
-	"syscall"
-	"time"
-
 	mqtt "github.com/eclipse/paho.mqtt.golang"
+	"github.com/looplab/fsm"
 	"github.com/samthor/dd"
 	ddapi "github.com/samthor/dd/api"
 	"github.com/samthor/dd/helper"
 	"github.com/sirupsen/logrus"
+	"os"
+	"os/signal"
+	"strings"
+	"syscall"
 )
 
 var (
@@ -48,6 +46,40 @@ func main() {
 		logger.Fatalf("can't open credentials file: %v %v", *flagCredentialsPath, err)
 	}
 
+	ddfsm := fsm.NewFSM(
+		"offline",
+		fsm.Events{
+			{Name: "go_online", Src: []string{"offline"}, Dst: "online"},
+			{Name: "go_offline", Src: []string{"online", "opening", "closing", "open", "closed"}, Dst: "offline"},
+			{Name: "open", Src: []string{"closed"}, Dst: "opening"},
+			{Name: "close", Src: []string{"open"}, Dst: "closing"},
+			{Name: "opened", Src: []string{"opening"}, Dst: "open"},
+			{Name: "closed", Src: []string{"closing"}, Dst: "closed"},
+		},
+		fsm.Callbacks{
+			"enter_online": func(_ context.Context, e *fsm.Event) {
+				fmt.Println("Cover is online")
+			},
+			"enter_offline": func(_ context.Context, e *fsm.Event) {
+				fmt.Println("Cover is offline")
+			},
+			"enter_opening": func(_ context.Context, e *fsm.Event) {
+				fmt.Println("Cover is opening")
+			},
+			"enter_closing": func(_ context.Context, e *fsm.Event) {
+				fmt.Println("Cover is closing")
+			},
+			"enter_open": func(_ context.Context, e *fsm.Event) {
+				fmt.Println("Cover is fully open")
+			},
+			"enter_closed": func(_ context.Context, e *fsm.Event) {
+				fmt.Println("Cover is fully closed")
+			},
+		},
+	)
+
+	fmt.Println(ddfsm.Current())
+
 	conn := dd.Conn{Host: *flagHost, Debug: *flagDebug}
 	err = conn.Connect(creds.Credential)
 	if err != nil {
@@ -73,6 +105,10 @@ func main() {
 	go func() {
 		<-stopCh
 		logger.Info("Shutting down gracefully.")
+		err = ddfsm.Event(context.Background(), "go_offline")
+		if err != nil {
+			fmt.Println("Error:", err)
+		}
 		ddapi.MarkAllOffline(mqttHandler, *flagMqttPrefix)
 		os.Exit(0)
 	}()
@@ -92,6 +128,11 @@ func main() {
 				logger.WithField("deviceID", device.ID).Info("Device already configured")
 			}
 			ddapi.MarkOnline(mqttHandler, *flagMqttPrefix, device.ID)
+
+			if ddfsm.Event(context.Background(), "go_online") != nil {
+				fmt.Println("Error:", err)
+			}
+
 			ddapi.PublishDoorState(mqttHandler, *flagMqttPrefix, device.ID, device.Device.Position)
 		}
 	}
@@ -156,7 +197,7 @@ func handleMQTTMessage(handler *ddapi.MQTTHandler, message mqtt.Message, conn *d
 
 	switch cmd {
 	case "command":
-		handleSetCommand(conn, deviceID, message.Payload())
+		handleCommand(conn, deviceID, message.Payload())
 	case "state":
 		logger.WithField("message", message).Debug("handleMQTTMessage safeFetchStatus")
 		status := safeFetchStatus(conn)
@@ -176,27 +217,22 @@ func handleMQTTMessage(handler *ddapi.MQTTHandler, message mqtt.Message, conn *d
 	}
 }
 
-func handleSetCommand(conn *dd.Conn, deviceID string, payload []byte) {
-	var p Payload
-	if err := json.Unmarshal(payload, &p); err != nil {
-		logger.WithField("error", err).Warn("Invalid payload in set command")
-		return
-	}
-	if p.Stop {
-		logger.WithFields(logrus.Fields{
-			"deviceID":  deviceID,
-			"timestamp": time.Now().Format(time.RFC3339),
-		}).Info("Stopping device")
-		safeCommand(conn, deviceID, ddapi.AvailableCommands.Stop)
-	} else if p.Position != nil && *p.Position > 0 {
-		logger.WithFields(logrus.Fields{
-			"deviceID": deviceID,
-			"position": *p.Position,
-		}).Info("Opening device to position")
+func handleCommand(conn *dd.Conn, deviceID string, payload []byte) {
+	payloadStr := strings.TrimSpace(string(payload)) // Convert to string and trim whitespace
+	logger.WithField("payload", payloadStr).Debug("Processing payload")
+
+	switch payloadStr {
+	case "OPEN":
+		logger.WithField("deviceID", deviceID).Info("Opening device")
 		safeCommand(conn, deviceID, ddapi.AvailableCommands.Open)
-	} else {
+	case "CLOSE":
 		logger.WithField("deviceID", deviceID).Info("Closing device")
 		safeCommand(conn, deviceID, ddapi.AvailableCommands.Close)
+	case "STOP":
+		logger.WithField("deviceID", deviceID).Info("Stopping device")
+		safeCommand(conn, deviceID, ddapi.AvailableCommands.Stop)
+	default:
+		logger.WithField("payload", payloadStr).Warn("Unknown command")
 	}
 }
 

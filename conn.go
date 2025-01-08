@@ -475,12 +475,10 @@ func (dc *Conn) internalMessages() error {
 		return err
 	}
 
-	if dc.Debug {
-		logger.WithField("messageCount", len(messages)).Debug("Fetched messages")
-	}
-
+	logger.WithField("messageCount", len(messages)).Info("Fetched messages")
+	
 	for _, message := range messages {
-		logger.WithField("processID", message.ProcessID).Debug("Processing message")
+		logger.WithField("processID", message.ProcessID).Info("Processing message")
 
 		b, err := message.readData(dc.phoneSecret)
 		if err != nil {

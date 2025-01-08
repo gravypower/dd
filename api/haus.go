@@ -190,10 +190,8 @@ func MarkOnline(handler *MQTTHandler, prefix, deviceID string) {
 }
 
 const (
-	NONE       = 0
-	AUTO_CLOSE = 1
-	CLOSE      = 2
-	OPEN       = 3
+	CLOSE = 0
+	OPEN  = 100
 )
 
 // PublishDoorState publishes the door state to the MQTT broker
@@ -205,10 +203,6 @@ func PublishDoorState(handler *MQTTHandler, prefix string, deviceID string, door
 		haState = "open"
 	case CLOSE:
 		haState = "closed"
-	case AUTO_CLOSE:
-		haState = "closing"
-	case NONE:
-		haState = "stopped"
 	default:
 		haState = "unknown"
 	}
