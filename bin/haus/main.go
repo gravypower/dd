@@ -38,6 +38,7 @@ func init() {
 		FullTimestamp: true,
 		ForceColors:   true,
 	})
+	logger.SetReportCaller(true)
 	logger.SetLevel(logrus.InfoLevel)
 }
 
@@ -58,19 +59,17 @@ func main() {
 		return
 	}
 
-	conn := dd.Conn{Host: *flagHost, Debug: *flagDebug}
-	err = conn.Connect(credentials.Credential)
+	ddConn := dd.Conn{Host: *flagHost, Debug: *flagDebug}
+	err = ddConn.Connect(credentials.Credential)
 	if err != nil {
 		logger.WithError(err).Fatal("failed to connect to dd")
 	}
 
-	basicInfo := ddapi.FetchBasicInfo(&conn)
+	basicInfo := ddapi.FetchBasicInfo(&ddConn)
 	logger.WithField("basicInfo", basicInfo).Info("Fetched basic information about the connection")
 
 	stopCh := make(chan os.Signal, 1)
 	signal.Notify(stopCh, os.Interrupt, syscall.SIGTERM)
-
-	// Main application logic...
 
 	// Wait for the termination signal
 	go func() {
@@ -92,7 +91,7 @@ func main() {
 	}()
 
 	statusCh := make(chan ddapi.DoorStatus)
-	go handleStatusUpdates(&conn, statusCh)
+	go handleStatusUpdates(&ddConn, statusCh)
 
 	// Subscribe to MQTT
 	subscribeToMQTT(mqttHandler, *flagMqttPrefix)
@@ -101,11 +100,12 @@ func main() {
 	logger.Info("Waiting on status updates...")
 
 	for status := range statusCh {
-		logger.WithField("status", status).Info("Announcing status")
+
 		for _, device := range status.Devices {
+			logger.WithField("Position", device.Device.Position).Info("Announcing Position")
 			deviceFSM, exists := ddapi.DeviceFSMs[device.ID]
 			if !exists {
-				deviceFSM = ddapi.ConfigureDevice(mqttHandler, &conn, *flagMqttPrefix, device, basicInfo)
+				deviceFSM = ddapi.ConfigureDevice(mqttHandler, &ddConn, *flagMqttPrefix, device, basicInfo)
 			} else {
 				logger.WithField("deviceID", device.ID).Info("Device already configured")
 			}
@@ -130,6 +130,7 @@ func connectToMQTT(broker, user, password string, port int) mqtt.Client {
 	if user != "" {
 		opts.SetUsername(user)
 	}
+
 	if password != "" {
 		opts.SetPassword(password)
 	}
@@ -138,6 +139,7 @@ func connectToMQTT(broker, user, password string, port int) mqtt.Client {
 	if token := client.Connect(); token.Wait() && token.Error() != nil {
 		logger.WithError(token.Error()).Fatal("Failed to connect to MQTT broker")
 	}
+
 	return client
 }
 
@@ -210,7 +212,7 @@ func handleMQTTMessage(topic string, payload []byte) {
 
 func handleStatusUpdates(conn *dd.Conn, statusCh chan ddapi.DoorStatus) {
 	status := ddapi.SafeFetchStatus(conn)
-	statusCh <- status
+	statusCh <- *status
 	if err := helper.LoopMessages(context.Background(), conn, statusCh); err != nil {
 		logger.WithField("error", err).Fatal("Error reading messages")
 	}

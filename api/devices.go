@@ -1,8 +1,18 @@
 package api
 
-import "github.com/samthor/dd"
+import (
+	"github.com/samthor/dd"
+)
 
-// DoorStatusDevice is the status of a single device.
+// Constants for door commands
+const (
+	CMD_CLOSE       = 4
+	CMD_PET_OPEN    = 6
+	CMD_PARCEL_OPEN = 7
+	CMD_OPEN        = 2
+)
+
+// DoorStatusDevice represents the status of a single device.
 type DoorStatusDevice struct {
 	ID           string `json:"deviceId"`
 	ScreenFormat int    `json:"screenFormat"`
@@ -21,11 +31,11 @@ type DoorStatusDevice struct {
 		ID    int64  `json:"logId"`
 		Alert int    `json:"alert"`
 		Text  string `json:"text"`
-		Time  int    `json:"time"`
-	}
+		Time  int64  `json:"time"`
+	} `json:"log"`
 }
 
-// DoorStatusButton is a button displayed in the UI.
+// DoorStatusButton represents a button displayed in the UI.
 type DoorStatusButton struct {
 	Action struct {
 		Base    int `json:"base"`
@@ -39,19 +49,17 @@ type DoorStatusButton struct {
 	Col   int    `json:"col"`
 }
 
-// DoorStatusUsers lists the users available to the environment.
+// DoorStatusUsers represents a user in the environment.
 type DoorStatusUsers struct {
 	Enabled  bool   `json:"enabled"`
 	Username string `json:"userName"`
 }
 
-// DoorStatus is the top-level status structure for all devices.
-// This is emitted regularly without a ProcessID, and is the response type for "/app/res/devices/fetch".
+// DoorStatus represents the top-level status structure for all devices.
 type DoorStatus struct {
 	DeviceOrder []string           `json:"deviceOrder"`
 	Devices     []DoorStatusDevice `json:"devices"`
 
-	// we might also _just_ see Users (the "admin update" payload)
 	Users []DoorStatusUsers `json:"users"`
 }
 
@@ -70,28 +78,29 @@ func (ds *DoorStatus) Get(id string) *DoorStatusDevice {
 	return nil
 }
 
-// Returns the door command for the given position.
-// This might not be the same if you changed it. :shrug:
+// CommandForRatio returns the door command for the given position.
 func CommandForRatio(position int) int {
-	if position <= 0 {
-		return 4 // close
-	} else if position <= 20 {
-		return 6 // pet: 10%
-	} else if position <= 68 {
-		return 7 // parcel: 34%
-	} else {
-		return 2 // open
+	switch {
+	case position <= 0:
+		return CMD_CLOSE
+	case position <= 20:
+		return CMD_PET_OPEN
+	case position <= 68:
+		return CMD_PARCEL_OPEN
+	default:
+		return CMD_OPEN
 	}
 }
 
-func SafeFetchStatus(conn *dd.Conn) DoorStatus {
+// SafeFetchStatus fetches the door status safely.
+func SafeFetchStatus(conn *dd.Conn) *DoorStatus {
 	var status DoorStatus
 	err := conn.RPC(dd.RPC{
 		Path:   "/app/res/devices/fetch",
 		Output: &status,
 	})
 	if err != nil {
-		logger.WithField("error", err).Fatal("Could not fetch status")
+		logger.WithField("error", err).Fatal("Could not fetch door status")
 	}
-	return status
+	return &status
 }

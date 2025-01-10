@@ -34,6 +34,7 @@ func init() {
 		FullTimestamp: true,
 		ForceColors:   true,
 	})
+	logger.SetReportCaller(true)
 	logger.SetLevel(logrus.InfoLevel)
 }
 

@@ -9,17 +9,19 @@ import (
 	"io"
 	"net/http"
 	"os"
-	"sync"
 	"time"
 
 	"github.com/sirupsen/logrus"
 )
 
 const (
-	RemoteAPIBase  = "version2.smartdoordevices.com"
-	SDKPort        = 8991
-	DefaultPort    = 8989
-	DefaultVersion = "2.21.1"
+	RemoteAPIBase                      = "version2.smartdoordevices.com"
+	SDKPort                            = 8991
+	DefaultPort                        = 8989
+	DefaultVersion                     = "2.21.1"
+	DefaultTarget  SimpleRequestTarget = iota
+	SDKTarget
+	RemoteTarget
 )
 
 var (
@@ -33,79 +35,8 @@ func init() {
 		FullTimestamp: true,
 		ForceColors:   true,
 	})
+	logger.SetReportCaller(true)
 	logger.SetLevel(logrus.InfoLevel)
-}
-
-// Conn is a connection to the service.
-type Conn struct {
-	Version     string // version number to send
-	Host        string // hostname
-	RequestMode bool   // whether to "request" changes, used for talking to an online server
-	Debug       bool   // whether to log debug
-
-	cred   Credential   // cached creds
-	client *http.Client // cached optional client
-
-	processID      string // random process ID to use in requests
-	sessionID      string // session ID returned from server
-	nextAccess     int    // the next timestamp to use (millis)
-	sessionSecret  []byte // to calculate sessionSignature (from server)
-	phoneSecret    []byte // to calculate phoneSignature, derived from cred.PhoneSecret
-	phoneSecretRaw []byte // raw secret, UTF-8 bytes of string
-
-	sequenceIDSuffix int // incremented suffix (to track replies)
-	pendingMessages  []*Message
-
-	genericRequestMutex sync.Mutex
-	unresolvedMutex     sync.Mutex
-	unresolvedRPC       map[string]chan *Message
-}
-
-// Credential holds login/connect credentials.
-type Credential struct {
-	PhoneSecret   string `json:"phoneSecret,omitempty"` // phone secret
-	BaseStation   string `json:"bsid,omitempty"`        // base station ID
-	Phone         string `json:"phoneId,omitempty"`     // phone ID
-	PhonePassword string `json:"phonePassword,omitempty"`
-	UserPassword  string `json:"userPassword,omitempty"`
-}
-
-type requestConfig struct {
-	data            []byte
-	path            string
-	requestIfOnline bool // does this need to be "requested" via /app/res/request
-}
-
-// genericRequest is what we actually marshal as JSON for any request.
-type genericRequest struct {
-	requestIfOnline bool // does this need to be "requested" via /app/res/request
-	dataPayload
-
-	Credential
-	SessionID         string `json:"sessionId,omitempty"`
-	ProcessID         string `json:"processId,omitempty"`
-	SessionSignature  string `json:"sessionSig,omitempty"`
-	PhoneSignature    string `json:"phoneSig,omitempty"`
-	Path              string `json:"path,omitempty"`
-	CommunicationType int    `json:"communicationType,omitempty"`
-}
-
-type genericResponse struct {
-	SessionSignature string `json:"sessionSig"`
-	RawMessages      string `json:"messages"`
-	Message          string `json:"message"`
-	BaseStation      string `json:"bsid"`
-	inlineResponse   []byte
-	dataPayload
-
-	// Fields from a connect response
-	SessionID           string `json:"sessionId"`
-	IsBasestationOnline bool   `json:"isBasestationOnline"`
-	HubVersion          int    `json:"hubVersion"`
-	CommunicationType   int    `json:"communicationType"`
-	SessionSecret       string `json:"sessionSecret"`
-	ServerTime          int    `json:"serverTime"`
-	IsAdmin             bool   `json:"isAdmin"`
 }
 
 // Messages decodes the list of Message instances in this genericResponse, if any.
@@ -115,19 +46,6 @@ func (gr *genericResponse) Messages() (out []*Message, err error) {
 	}
 	err = json.Unmarshal([]byte(gr.RawMessages), &out)
 	return out, err
-}
-
-// Message is a log event from the device. It's returned as part of genericResponse.
-type Message struct {
-	AppTimeout     int    `json:"appTimeout"`
-	ProcessID      string `json:"processId"`
-	Sequence       int    `json:"sequence"`
-	ProcessState   *int   `json:"processState"` // nb. sometimes is unset
-	PhoneSignature string `json:"phoneSig"`
-	Type           int    `json:"type"`
-	dataPayload
-
-	DecodedMessage []byte `json:"-"` // actual decoded message
 }
 
 func (m *Message) Decode(target interface{}) error {
@@ -144,39 +62,6 @@ func (m *Message) Decode(target interface{}) error {
 		"message":   string(m.DecodedMessage), // Convert to string for readability
 	}).Debug("Decrypted message")
 	return nil
-}
-
-type connectResponseData struct {
-	UserAccess struct {
-		IsAccessReady                 bool   `json:"isAccessReady"`
-		NextAccess                    int    `json:"nextAccess"`
-		IsExpired                     bool   `json:"isExpired"`
-		IsCurrentlyRestricted         bool   `json:"isCurrentlyRestricted"`
-		DescriptionRestrictionDetails string `json:"descriptionRestrictionDetails"`
-		HashCode                      int    `json:"hashCode"`
-		NextRestricted                int    `json:"nextRestricted"`
-		IsHubClockAccurate            bool   `json:"isHubClockAccurate"`
-		DescriptionNextEvent          string `json:"descriptionNextEvent"`
-		OneTimeLimit                  int    `json:"oneTimeLimit"`
-		HasRestrictions               bool   `json:"hasRestrictions"`
-	} `json:"userAccess"`
-	IsPasswordExpired bool `json:"isPasswordExpired"`
-	IsAdmin           bool `json:"isAdmin"`
-}
-
-type SimpleRequestTarget int
-
-const (
-	DefaultTarget SimpleRequestTarget = iota
-	SDKTarget
-	RemoteTarget
-)
-
-type SimpleRequest struct {
-	Path   string              // Path for request
-	Target SimpleRequestTarget // Where to call
-	Input  interface{}
-	Output interface{}
 }
 
 // SimpleRequest performs a simple request to our device, without session logic.
@@ -476,7 +361,7 @@ func (dc *Conn) internalMessages() error {
 	}
 
 	logger.WithField("messageCount", len(messages)).Info("Fetched messages")
-	
+
 	for _, message := range messages {
 		logger.WithField("processID", message.ProcessID).Info("Processing message")
 
@@ -513,12 +398,6 @@ func (dc *Conn) Messages() ([]*Message, error) {
 	out := dc.pendingMessages
 	dc.pendingMessages = nil
 	return out, nil
-}
-
-type RPC struct {
-	Path   string
-	Input  interface{}
-	Output interface{}
 }
 
 // Request makes a signed generic RPC and waits until its response is available.
