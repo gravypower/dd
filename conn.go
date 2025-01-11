@@ -271,7 +271,7 @@ func (dc *Conn) signedRequest(conf requestConfig) (*genericRequest, error) {
 		"nextAccess": dc.nextAccess,
 	}).Debug("Generated signed request")
 
-	dc.nextAccess = int(time.Now().UnixNano()/1e6) + 10000 // 10 seconds in milliseconds
+	dc.nextAccess = int(time.Now().UnixNano()/1e6) + 5000
 
 	logger.WithField("nextAccess", dc.nextAccess).Debug("Next access time updated to 10 seconds later")
 

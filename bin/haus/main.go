@@ -60,7 +60,7 @@ func main() {
 	mqttHandler := ddapi.NewMQTTHandler(mqttClient, logger)
 
 	if *flagRemoveEntity != "" {
-		ddapi.RemoveEntity(mqttHandler, *flagRemoveEntity)
+		mqttHandler.RemoveEntity(*flagRemoveEntity)
 		return
 	}
 
@@ -98,8 +98,6 @@ func main() {
 	statusCh := make(chan ddapi.DoorStatus)
 	go handleStatusUpdates(&ddConn, statusCh)
 
-	logger.Info("Waiting for MQTT messages...")
-
 	for status := range statusCh {
 		for _, device := range status.Devices {
 			logger.WithField("Position", device.Device.Position).Info("Announcing Position")
@@ -120,7 +118,7 @@ func main() {
 			var haState string
 			switch device.Device.Position {
 			case OPEN:
-				haState = "open"
+				haState = "opened"
 			case CLOSE:
 				haState = "closed"
 			default:
@@ -161,18 +159,36 @@ func connectToMQTT(broker, user, password string, port int) mqtt.Client {
 
 // Subscribe to MQTT topics
 func subscribeToMQTT(mqttHandler *ddapi.MQTTHandler, prefix string) {
-	topic := fmt.Sprintf("%s/#", prefix)
-	token := mqttHandler.Client.Subscribe(topic, 0, func(client mqtt.Client, msg mqtt.Message) {
-		handleMQTTMessage(msg.Topic(), msg.Payload())
-	})
-	if token.Wait() && token.Error() != nil {
-		logger.WithError(token.Error()).Fatal("Failed to subscribe to MQTT topic")
+	// Define the topics to subscribe to
+	topics := map[string]string{
+		"command":      fmt.Sprintf("%s/+/command", prefix),
+		"state":        fmt.Sprintf("%s/+/state", prefix),
+		"availability": fmt.Sprintf("%s/+/availability", prefix),
 	}
-	logger.Infof("Subscribed to topic: %s", topic)
+
+	// Subscribe to each topic with specific handling logic
+	for topicType, topic := range topics {
+		token := mqttHandler.Client.Subscribe(topic, 0, func(client mqtt.Client, msg mqtt.Message) {
+			switch topicType {
+			case "command":
+				handleCommand(msg.Topic(), msg.Payload())
+			//case "state":
+			//	handleStateUpdate(msg.Topic(), msg.Payload())
+			//case "availability":
+			//	handleAvailability(msg.Topic(), msg.Payload())
+			default:
+				logger.Warnf("Unknown topic type: %s", topicType)
+			}
+		})
+		if token.Wait() && token.Error() != nil {
+			logger.WithError(token.Error()).Fatalf("Failed to subscribe to MQTT topic: %s", topic)
+		}
+		logger.Infof("Subscribed to topic: %s", topic)
+	}
 }
 
 // Handle incoming MQTT messages
-func handleMQTTMessage(topic string, payload []byte) {
+func handleCommand(topic string, payload []byte) {
 	parts := strings.Split(topic, "/")
 	if len(parts) < 3 {
 		logger.WithField("topic", topic).Warn("Invalid topic format")

@@ -11,7 +11,7 @@ import (
 // LoopMessages loops over messages, fetching every few seconds and emitting to the channel.
 // It terminates if and when the context is stopped.
 func LoopMessages(ctx context.Context, conn *dd.Conn, ch chan<- ddapi.DoorStatus) error {
-	ticker := time.NewTicker(10 * time.Second) // Send interval
+	ticker := time.NewTicker(5 * time.Second) // Send interval
 	defer ticker.Stop()
 
 	for {
