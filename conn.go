@@ -15,11 +15,14 @@ import (
 )
 
 const (
-	RemoteAPIBase                      = "version2.smartdoordevices.com"
-	SDKPort                            = 8991
-	DefaultPort                        = 8989
-	DefaultVersion                     = "2.21.1"
-	DefaultTarget  SimpleRequestTarget = iota
+	RemoteAPIBase  = "version2.smartdoordevices.com"
+	SDKPort        = 8991
+	DefaultPort    = 8989
+	DefaultVersion = "2.21.1"
+)
+
+const (
+	DefaultTarget SimpleRequestTarget = iota
 	SDKTarget
 	RemoteTarget
 )

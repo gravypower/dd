@@ -207,30 +207,6 @@ func MarkOnline(handler *MQTTHandler, prefix, deviceID string) {
 	}
 }
 
-const (
-	CLOSE = 0
-	OPEN  = 100
-)
-
-// PublishDoorState publishes the door state to the MQTT broker
-func PublishDoorState(handler *MQTTHandler, prefix string, deviceID string, doorState int) {
-	var haState string
-
-	switch doorState {
-	case OPEN:
-		haState = "open"
-	case CLOSE:
-		haState = "closed"
-	default:
-		haState = "unknown"
-	}
-
-	stateTopic := fmt.Sprintf(StateTopicTemplate, prefix, deviceID)
-	if err := handler.Publish(stateTopic, 0, false, haState); err != nil {
-		logger.WithField("error", err).Fatal("Couldn't publish door state")
-	}
-}
-
 // NewDeviceFSM initializes the FSM for a specific device
 func NewDeviceFSM(deviceID string, mqttPrefix string, conn *dd.Conn, mqttHandler *MQTTHandler) *DeviceFSM {
 	return &DeviceFSM{
@@ -245,30 +221,30 @@ func NewDeviceFSM(deviceID string, mqttPrefix string, conn *dd.Conn, mqttHandler
 				{Name: "go_offline", Src: []string{"online", "opening", "closing", "open", "closed"}, Dst: "offline"},
 				{Name: "open", Src: []string{"closed"}, Dst: "opening"},
 				{Name: "close", Src: []string{"open"}, Dst: "closing"},
-				{Name: "opened", Src: []string{"opening"}, Dst: "open"},
-				{Name: "closed", Src: []string{"closing"}, Dst: "closed"},
+				{Name: "opened", Src: []string{"opening", "offline", "online"}, Dst: "open"},
+				{Name: "closed", Src: []string{"closing", "offline", "online"}, Dst: "closed"},
 				{Name: "stop", Src: []string{"opening", "closing"}, Dst: "stopped"},
 			},
 			fsm.Callbacks{
 				"enter_online": func(ctx context.Context, e *fsm.Event) {
-					logger.WithField("deviceID", deviceID).Info("Device is online")
 					MarkOnline(mqttHandler, mqttPrefix, deviceID)
+					logger.WithField("deviceID", deviceID).Info("Device is online")
 				},
 				"enter_offline": func(ctx context.Context, e *fsm.Event) {
 					MarkOffline(mqttHandler, mqttPrefix, deviceID)
 					logger.WithField("deviceID", deviceID).Info("Device is offline")
 				},
 				"enter_opening": func(ctx context.Context, e *fsm.Event) {
-					logger.WithField("deviceID", deviceID).Info("Device is opening")
 					SafeCommand(conn, deviceID, AvailableCommands.Open)
+					logger.WithField("deviceID", deviceID).Info("Device is opening")
 				},
 				"enter_closing": func(ctx context.Context, e *fsm.Event) {
-					logger.WithField("deviceID", deviceID).Info("Device is closing")
 					SafeCommand(conn, deviceID, AvailableCommands.Close)
+					logger.WithField("deviceID", deviceID).Info("Device is closing")
 				},
 				"enter_stopped": func(ctx context.Context, e *fsm.Event) {
-					logger.WithField("deviceID", deviceID).Info("Device is stopping")
 					SafeCommand(conn, deviceID, AvailableCommands.Stop)
+					logger.WithField("deviceID", deviceID).Info("Device is stopping")
 				},
 				"enter_open": func(ctx context.Context, e *fsm.Event) {
 					logger.WithField("deviceID", deviceID).Info("Device is fully open")

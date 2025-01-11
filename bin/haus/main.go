@@ -16,6 +16,11 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+const (
+	CLOSE = 0
+	OPEN  = 100
+)
+
 // Logger setup
 var logger = logrus.New()
 
@@ -93,29 +98,40 @@ func main() {
 	statusCh := make(chan ddapi.DoorStatus)
 	go handleStatusUpdates(&ddConn, statusCh)
 
-	// Subscribe to MQTT
-	subscribeToMQTT(mqttHandler, *flagMqttPrefix)
-
 	logger.Info("Waiting for MQTT messages...")
-	logger.Info("Waiting on status updates...")
 
 	for status := range statusCh {
-
 		for _, device := range status.Devices {
 			logger.WithField("Position", device.Device.Position).Info("Announcing Position")
 			deviceFSM, exists := ddapi.DeviceFSMs[device.ID]
 			if !exists {
 				deviceFSM = ddapi.ConfigureDevice(mqttHandler, &ddConn, *flagMqttPrefix, device, basicInfo)
+				// Subscribe to MQTT
+				subscribeToMQTT(mqttHandler, *flagMqttPrefix)
+				logger.Info("Waiting on status updates...")
+				err := deviceFSM.FSM.Event(context.Background(), "go_online")
+				if err != nil {
+					logger.WithError(err).Error("Failed to process 'go_online' event")
+				}
 			} else {
 				logger.WithField("deviceID", device.ID).Info("Device already configured")
 			}
 
-			err := deviceFSM.FSM.Event(context.Background(), "go_online")
-			if err != nil {
-				logger.WithError(err).Error("Failed to process 'go_online' event")
+			var haState string
+			switch device.Device.Position {
+			case OPEN:
+				haState = "open"
+			case CLOSE:
+				haState = "closed"
+			default:
+				haState = "unknown"
 			}
 
-			ddapi.PublishDoorState(mqttHandler, *flagMqttPrefix, device.ID, device.Device.Position)
+			err = deviceFSM.FSM.Event(context.Background(), haState)
+			if err != nil {
+				logger.WithError(err).WithField("haState", haState).Error("Failed to process event")
+			}
+
 		}
 	}
 
