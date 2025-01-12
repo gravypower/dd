@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
@@ -98,14 +99,19 @@ func main() {
 	statusCh := make(chan ddapi.DoorStatus)
 	go handleStatusUpdates(&ddConn, statusCh)
 
+	var deviceFSMsMutex sync.Mutex
 	for status := range statusCh {
 		for _, device := range status.Devices {
 			logger.WithField("Position", device.Device.Position).Info("Announcing Position")
+
+			// Ensure thread-safe access to DeviceFSMs
+			deviceFSMsMutex.Lock()
 			deviceFSM, exists := ddapi.DeviceFSMs[device.ID]
 			if !exists {
 				deviceFSM = ddapi.ConfigureDevice(mqttHandler, &ddConn, *flagMqttPrefix, device, basicInfo)
+				ddapi.DeviceFSMs[device.ID] = deviceFSM
 				// Subscribe to MQTT
-				subscribeToMQTT(mqttHandler, *flagMqttPrefix)
+				subscribeToMQTTCommandTopics(mqttHandler, *flagMqttPrefix)
 				logger.Info("Waiting on status updates...")
 				err := deviceFSM.FSM.Event(context.Background(), "go_online")
 				if err != nil {
@@ -114,22 +120,39 @@ func main() {
 			} else {
 				logger.WithField("deviceID", device.ID).Info("Device already configured")
 			}
+			deviceFSMsMutex.Unlock()
 
+			// Determine the desired FSM state
 			var haState string
 			switch device.Device.Position {
 			case OPEN:
-				haState = "opened"
+				haState = "go_opened"
 			case CLOSE:
-				haState = "closed"
+				haState = "go_closed"
 			default:
-				haState = "unknown"
+				logger.WithField("Position", device.Device.Position).Warn("Ignoring intermediate or unknown position")
+				continue // Skip this device
 			}
 
-			err = deviceFSM.FSM.Event(context.Background(), haState)
+			currentState := deviceFSM.FSM.Current()
+			if (currentState == "opening" && haState == "go_closed") ||
+				(currentState == "closing" && haState == "go_opened") {
+				logger.WithFields(logrus.Fields{
+					"currentState": currentState,
+					"haState":      haState,
+					"deviceID":     device.ID,
+				}).Info("Ignoring invalid state transition while opening or closing")
+				continue
+			}
+
+			// Process the state transition
+			err := deviceFSM.FSM.Event(context.Background(), haState)
 			if err != nil {
-				logger.WithError(err).WithField("haState", haState).Error("Failed to process event")
+				logger.WithError(err).
+					WithField("haState", haState).
+					WithField("currentState", deviceFSM.FSM.Current()).
+					Error("Failed to process event")
 			}
-
 		}
 	}
 
@@ -158,44 +181,27 @@ func connectToMQTT(broker, user, password string, port int) mqtt.Client {
 }
 
 // Subscribe to MQTT topics
-func subscribeToMQTT(mqttHandler *ddapi.MQTTHandler, prefix string) {
-	// Define the topics to subscribe to
-	topics := map[string]string{
-		"command":      fmt.Sprintf("%s/+/command", prefix),
-		"state":        fmt.Sprintf("%s/+/state", prefix),
-		"availability": fmt.Sprintf("%s/+/availability", prefix),
-	}
+func subscribeToMQTTCommandTopics(mqttHandler *ddapi.MQTTHandler, prefix string) {
+	commandTopics := fmt.Sprintf(ddapi.CommandTopicTemplate, prefix, "+")
 
-	// Subscribe to each topic with specific handling logic
-	for topicType, topic := range topics {
-		token := mqttHandler.Client.Subscribe(topic, 0, func(client mqtt.Client, msg mqtt.Message) {
-			switch topicType {
-			case "command":
-				handleCommand(msg.Topic(), msg.Payload())
-			//case "state":
-			//	handleStateUpdate(msg.Topic(), msg.Payload())
-			//case "availability":
-			//	handleAvailability(msg.Topic(), msg.Payload())
-			default:
-				logger.Warnf("Unknown topic type: %s", topicType)
-			}
-		})
-		if token.Wait() && token.Error() != nil {
-			logger.WithError(token.Error()).Fatalf("Failed to subscribe to MQTT topic: %s", topic)
-		}
-		logger.Infof("Subscribed to topic: %s", topic)
+	token := mqttHandler.Client.Subscribe(commandTopics, 0, func(client mqtt.Client, msg mqtt.Message) {
+		payload := strings.ToUpper(string(msg.Payload()))
+		logger.WithField("payload", payload).WithField("commandTopics", commandTopics).Info("processing mqtt message")
+		handleCommand(msg.Topic(), payload)
+	})
+	if token.Wait() && token.Error() != nil {
+		logger.WithError(token.Error()).WithField("topic", commandTopics).Fatal("Failed to subscribe to MQTT topic")
 	}
+	logger.Infof("Subscribed to topic: %s", commandTopics)
 }
 
 // Handle incoming MQTT messages
-func handleCommand(topic string, payload []byte) {
+func handleCommand(topic string, command string) {
 	parts := strings.Split(topic, "/")
 	if len(parts) < 3 {
 		logger.WithField("topic", topic).Warn("Invalid topic format")
 		return
 	}
-
-	command := strings.ToUpper(string(payload))
 
 	deviceID := parts[1]
 	deviceFSM, exists := ddapi.DeviceFSMs[deviceID]
@@ -220,20 +226,15 @@ func handleCommand(topic string, payload []byte) {
 		if err != nil {
 			logger.WithError(err).Error("Failed to process 'go_offline' event")
 		}
-	case "OPEN":
-		err := deviceFSM.FSM.Event(context.Background(), "open")
+	case "GO_OPEN":
+		err := deviceFSM.FSM.Event(context.Background(), "go_open")
 		if err != nil {
 			logger.WithError(err).Error("Failed to process 'open' event")
 		}
-	case "CLOSE":
-		err := deviceFSM.FSM.Event(context.Background(), "close")
+	case "GO_CLOSE":
+		err := deviceFSM.FSM.Event(context.Background(), "go_close")
 		if err != nil {
 			logger.WithError(err).Error("Failed to process 'close' event")
-		}
-	case "STOP":
-		err := deviceFSM.FSM.Event(context.Background(), "stop")
-		if err != nil {
-			logger.WithError(err).Error("Failed to process 'stop' event")
 		}
 	default:
 		logger.WithFields(logrus.Fields{

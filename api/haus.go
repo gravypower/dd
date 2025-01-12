@@ -99,22 +99,16 @@ func (h *MQTTHandler) PublishStatus(prefix, deviceID, status string) error {
 	return h.publishToMQTT(topic, 0, false, status)
 }
 
-// MarkOnline marks a specific device as online
-func (h *MQTTHandler) MarkOnline(prefix, deviceID string) error {
-	availabilityTopic := fmt.Sprintf(AvailabilityTopicTemplate, prefix, deviceID)
-	return h.publishToMQTT(availabilityTopic, 0, false, "online")
-}
-
-// MarkOffline marks a specific device as offline
-func (h *MQTTHandler) MarkOffline(prefix, deviceID string) error {
-	availabilityTopic := fmt.Sprintf(AvailabilityTopicTemplate, prefix, deviceID)
-	return h.publishToMQTT(availabilityTopic, 0, false, "offline")
+// PublishStatus publishes a device's status to the appropriate topic
+func (h *MQTTHandler) PublishAvailability(prefix, deviceID, availability string) error {
+	topic := fmt.Sprintf(AvailabilityTopicTemplate, prefix, deviceID)
+	return h.publishToMQTT(topic, 0, false, availability)
 }
 
 // RemoveEntity removes the Home Assistant entity for the device
 func (h *MQTTHandler) RemoveEntity(deviceID string) error {
 	discoveryTopic := fmt.Sprintf(HomeAssistantConfigTopicTemplate, deviceID)
-	err := h.publishToMQTT(discoveryTopic, 1, true, "")
+	err := h.publishToMQTT(discoveryTopic, 0, false, "")
 	if err != nil {
 		h.Logger.WithFields(logrus.Fields{
 			"deviceID": deviceID,
@@ -123,40 +117,37 @@ func (h *MQTTHandler) RemoveEntity(deviceID string) error {
 		return err
 	}
 	h.Logger.WithField("deviceID", deviceID).Info("Removed entity for device")
-	h.removeDeviceFSM(deviceID)
 	return nil
-}
-
-// removeDeviceFSM removes a device's FSM from the map
-func (h *MQTTHandler) removeDeviceFSM(deviceID string) {
-	DeviceFSMsMutex.Lock()
-	defer DeviceFSMsMutex.Unlock()
-
-	if _, exists := DeviceFSMs[deviceID]; exists {
-		delete(DeviceFSMs, deviceID)
-		h.Logger.WithField("deviceID", deviceID).Info("Device FSM removed")
-	} else {
-		h.Logger.WithField("deviceID", deviceID).Warn("Device FSM not found for removal")
-	}
 }
 
 // ConfigureDevice publishes the Home Assistant MQTT cover configuration
 func ConfigureDevice(handler *MQTTHandler, conn *dd.Conn, mqttPrefix string, device DoorStatusDevice, basicInfo BasicInfo) *DeviceFSM {
 	configTopic := fmt.Sprintf(HomeAssistantConfigTopicTemplate, device.ID)
 	configPayload := map[string]interface{}{
-		"name":               device.Name,
-		"command_topic":      fmt.Sprintf(CommandTopicTemplate, mqttPrefix, device.ID),
-		"state_topic":        fmt.Sprintf(StateTopicTemplate, mqttPrefix, device.ID),
-		"availability_topic": fmt.Sprintf(AvailabilityTopicTemplate, mqttPrefix, device.ID),
-		"availability_mode":  "all",
-		"device_class":       "garage",
-		"unique_id":          fmt.Sprintf("cover_%s", device.ID),
-		"scan_interval":      10,
+		"name":                  device.Name,
+		"command_topic":         fmt.Sprintf(CommandTopicTemplate, mqttPrefix, device.ID),
+		"state_topic":           fmt.Sprintf(StateTopicTemplate, mqttPrefix, device.ID),
+		"availability_topic":    fmt.Sprintf(AvailabilityTopicTemplate, mqttPrefix, device.ID),
+		"availability_mode":     "latest",
+		"payload_open":          "go_open",
+		"payload_close":         "go_close",
+		"state_open":            "open",
+		"state_closed":          "closed",
+		"state_opening":         "opening",
+		"state_closing":         "closing",
+		"payload_available":     "online",
+		"payload_not_available": "offline",
+		"optimistic":            false,
+		"retain":                false,
+		"device_class":          "garage",
+		"unique_id":             fmt.Sprintf("cover_%s", device.ID),
+		"scan_interval":         10,
 		"device": map[string]interface{}{
 			"identifiers":  []string{fmt.Sprintf("garage_door_%s", device.ID)},
 			"name":         basicInfo.Name,
 			"manufacturer": "dd",
 		},
+		"icon": "mdi:garage",
 	}
 
 	bytes, err := json.Marshal(configPayload)
@@ -165,7 +156,7 @@ func ConfigureDevice(handler *MQTTHandler, conn *dd.Conn, mqttPrefix string, dev
 		return nil
 	}
 
-	if err := handler.publishToMQTT(configTopic, 0, true, bytes); err != nil {
+	if err := handler.publishToMQTT(configTopic, 0, false, bytes); err != nil {
 		logger.WithField("err", err).Fatal("Couldn't publish config")
 	}
 
@@ -181,38 +172,40 @@ func NewDeviceFSM(deviceID string, mqttPrefix string, conn *dd.Conn, mqttHandler
 		Conn:        conn,
 		mqttHandler: mqttHandler,
 		FSM: fsm.NewFSM(
-			"offline",
+			"initial",
 			fsm.Events{
-				{Name: "go_online", Src: []string{"offline", "unavailable"}, Dst: "online"},
+				{Name: "go_online", Src: []string{"offline", "initial"}, Dst: "online"},
 				{Name: "go_offline", Src: []string{"online", "opening", "closing", "open", "closed"}, Dst: "offline"},
-				{Name: "open", Src: []string{"online", "closed"}, Dst: "opening"},
-				{Name: "close", Src: []string{"online", "open"}, Dst: "closing"},
-				{Name: "opened", Src: []string{"opening", "offline", "online"}, Dst: "open"},
-				{Name: "closed", Src: []string{"closing", "offline", "online"}, Dst: "closed"},
-				{Name: "stop", Src: []string{"opening", "closing"}, Dst: "stopped"},
+				{Name: "go_open", Src: []string{"closed"}, Dst: "opening"},
+				{Name: "go_close", Src: []string{"open"}, Dst: "closing"},
+				{Name: "go_opened", Src: []string{"online", "opening", "open", "closing", "closed"}, Dst: "open"},
+				{Name: "go_closed", Src: []string{"online", "opening", "open", "closing", "closed"}, Dst: "closed"},
 			},
 			fsm.Callbacks{
 				"enter_online": func(ctx context.Context, e *fsm.Event) {
-					mqttHandler.MarkOnline(mqttPrefix, deviceID)
+					mqttHandler.PublishAvailability(mqttPrefix, deviceID, "online")
 					logger.WithField("deviceID", deviceID).Info("Device is online")
 				},
 				"enter_offline": func(ctx context.Context, e *fsm.Event) {
-					mqttHandler.MarkOffline(mqttPrefix, deviceID)
+					err := mqttHandler.PublishAvailability(mqttPrefix, deviceID, "offline")
+					if err != nil {
+						logger.WithError(err).Info("Device is Opening")
+					}
 					logger.WithField("deviceID", deviceID).Info("Device is offline")
 				},
 				"enter_opening": func(ctx context.Context, e *fsm.Event) {
+					mqttHandler.PublishStatus(mqttPrefix, deviceID, "opening")
 					SafeCommand(conn, deviceID, AvailableCommands.Open)
-					mqttHandler.PublishStatus(mqttPrefix, deviceID, "Opening")
 					logger.WithField("deviceID", deviceID).Info("Device is Opening")
 				},
 				"enter_closing": func(ctx context.Context, e *fsm.Event) {
+					mqttHandler.PublishStatus(mqttPrefix, deviceID, "closing")
 					SafeCommand(conn, deviceID, AvailableCommands.Close)
-					mqttHandler.PublishStatus(mqttPrefix, deviceID, "Closing")
 					logger.WithField("deviceID", deviceID).Info("Device is closing")
 				},
 				"enter_stopping": func(ctx context.Context, e *fsm.Event) {
 					SafeCommand(conn, deviceID, AvailableCommands.Stop)
-					mqttHandler.PublishStatus(mqttPrefix, deviceID, "Stopping")
+					mqttHandler.PublishStatus(mqttPrefix, deviceID, "stopping")
 					logger.WithField("deviceID", deviceID).Info("Device is stopping")
 				},
 				"enter_open": func(ctx context.Context, e *fsm.Event) {
