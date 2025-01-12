@@ -2,21 +2,30 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"flag"
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/samthor/dd"
 	ddapi "github.com/samthor/dd/api"
 	"github.com/samthor/dd/helper"
+	"github.com/sirupsen/logrus"
 )
 
+const (
+	CLOSE = 0
+	OPEN  = 100
+)
+
+// Logger setup
+var logger = logrus.New()
+
+// Flags
 var (
 	flagCredentialsPath = flag.String("creds", "creds.json", "path to credentials file")
 	flagHost            = flag.String("host", "", "host to connect to")
@@ -25,270 +34,219 @@ var (
 	flagMqttUser        = flag.String("mqttUser", "", "mqtt user")
 	flagMqttPassword    = flag.String("mqttPassword", "", "mqtt password")
 	flagMqttPrefix      = flag.String("mqttPrefix", "dd-door", "prefix for mqtt")
+	flagRemoveEntity    = flag.String("removeEntity", "", "entity to remove from haus")
 	flagDebug           = flag.Bool("debug", false, "debug mode")
 )
 
-var configuredDevices = make(map[string]bool)
+func init() {
+	logger.SetOutput(os.Stdout)
+	logger.SetFormatter(&logrus.TextFormatter{
+		FullTimestamp: true,
+		ForceColors:   true,
+	})
+	logger.SetReportCaller(true)
+	logger.SetLevel(logrus.InfoLevel)
+}
 
 func main() {
 	flag.Parse()
 
-	creds, err := helper.LoadCreds(*flagCredentialsPath)
+	credentials, err := helper.LoadCreds(*flagCredentialsPath)
 	if err != nil {
-		log.Fatalf("can't open credentials file: %v %v", *flagCredentialsPath, err)
+		logger.WithField("*flagCredentialsPath", *flagCredentialsPath).WithError(err).Fatal("can't open credentials file")
 	}
 
-	conn := dd.Conn{Host: *flagHost, Debug: *flagDebug}
-	err = conn.Connect(creds.Credential)
+	// MQTT connection setup
+	mqttClient := connectToMQTT(*flagMqtt, *flagMqttUser, *flagMqttPassword, *flagMqttPort)
+	mqttHandler := ddapi.NewMQTTHandler(mqttClient, logger)
+
+	if *flagRemoveEntity != "" {
+		mqttHandler.RemoveEntity(*flagRemoveEntity)
+		return
+	}
+
+	ddConn := dd.Conn{Host: *flagHost, Debug: *flagDebug}
+	err = ddConn.Connect(credentials.Credential)
 	if err != nil {
-		log.Fatalf("failed to connect: %v", err)
+		logger.WithError(err).Fatal("failed to connect to dd")
 	}
 
-	// Fetch basic info from SDK endpoint.
-	var info ddapi.BasicInfo
-	err = conn.SimpleRequest(dd.SimpleRequest{
-		Path:   "/sdk/info",
-		Target: dd.SDKTarget,
-		Output: &info,
-	})
-	if err != nil {
-		log.Fatalf("could not get basic info: %v", err)
-	}
-	log.Printf("basic info: %+v", info)
-
-	// Connect to MQTT and do/send things.
-	opts := mqtt.NewClientOptions()
-	opts.AddBroker(fmt.Sprintf("tcp://%s:%d", *flagMqtt, *flagMqttPort))
-	opts.SetClientID("go_mqtt_client")
-
-	if *flagMqttUser != "" {
-		opts.SetUsername(*flagMqttUser)
-	}
-
-	if *flagMqttPassword != "" {
-		opts.SetPassword(*flagMqttPassword)
-	}
-
-	mqttClient := mqtt.NewClient(opts)
-	if token := mqttClient.Connect(); token.Wait() && token.Error() != nil {
-		log.Fatalf("failed to connect to mqtt: %s/%d %v", *flagMqtt, *flagMqttPort, err)
-	}
+	basicInfo := ddapi.FetchBasicInfo(&ddConn)
+	logger.WithField("basicInfo", basicInfo).Info("Fetched basic information about the connection")
 
 	stopCh := make(chan os.Signal, 1)
 	signal.Notify(stopCh, os.Interrupt, syscall.SIGTERM)
 
+	// Wait for the termination signal
 	go func() {
 		<-stopCh
-		log.Println("Shutting down gracefully...")
-		markAllOffline(mqttClient, *flagMqttPrefix)
+		logger.Info("Termination signal received")
+		// Ensure resources are cleaned up
+		logger.Info("Shutting down gracefully")
+		for deviceID, fsm := range ddapi.DeviceFSMs {
+			logger.Infof("Shutting down device: %s", deviceID)
+			err := fsm.FSM.Event(context.Background(), "go_offline")
+			if err != nil {
+				logger.WithField("deviceID", deviceID).WithError(err).Error("Failed to set device to offline")
+			} else {
+				logger.WithField("deviceID", deviceID).Info("Device successfully set to offline")
+			}
+		}
+		mqttClient.Disconnect(250)
 		os.Exit(0)
 	}()
 
-	// Recieve status updates forever.
 	statusCh := make(chan ddapi.DoorStatus)
-	go func() {
-		status := safeFetchStatus(&conn)
-		statusCh <- status // force initial status to be treated inline
-		err := helper.LoopMessages(context.Background(), &conn, statusCh)
-		if err != nil {
-			log.Fatalf("err reading messages: %v", err)
-		}
-	}()
+	go handleStatusUpdates(&ddConn, statusCh)
 
-	subscribeTopic := fmt.Sprintf("%s/#", *flagMqttPrefix)
-	tok := mqttClient.Subscribe(subscribeTopic, 0, func(c mqtt.Client, m mqtt.Message) {
-
-		if m.Retained() {
-			return // ignore retained
-		}
-
-		parts := strings.Split(m.Topic(), "/")
-		if len(parts) != 3 || parts[2] == "" {
-			return // not useful
-		}
-
-		deviceId := parts[1]
-		cmd := parts[2]
-		log.Printf("got mqtt request: deviceId=%v cmd=%v", deviceId, cmd)
-
-		switch cmd {
-		case "set":
-			bytes := m.Payload()
-			var payload Payload
-			err := json.Unmarshal(bytes, &payload)
-			if err != nil {
-				log.Printf("got invalid payload in set: %v", err)
-				return
-			}
-			if payload.Stop {
-				log.Printf("[%v]: stopping", deviceId)
-				// TODO: what
-				safeCommand(&conn, deviceId, ddapi.AvailableCommands.Stop)
-			} else if payload.Position != nil && *payload.Position > 0 {
-				log.Printf("[%v]: cowardly opening all the way for position=%v", deviceId, *payload.Position)
-				safeCommand(&conn, deviceId, ddapi.AvailableCommands.Open)
-			} else if payload.Position != nil {
-				log.Printf("[%v]: closing", deviceId)
-				safeCommand(&conn, deviceId, ddapi.AvailableCommands.Close)
-			} else {
-				log.Printf("[%v]: got misunderstood payload, ignoring: %+v", deviceId, payload)
-			}
-
-		case "get":
-			status := safeFetchStatus(&conn)
-			d := status.Get(deviceId)
-			if d == nil {
-				log.Printf("Got request for unknown device: %s", deviceId)
-				return
-			}
-			safePublish(mqttClient, *d)
-
-		default:
-			return
-		}
-
-	})
-	<-tok.Done() // wait for sub to start
-	if tok.Error() != nil {
-		log.Fatalf("couldn't subscribe to topic=%s, err=%v", subscribeTopic, tok.Error())
-	}
-
-	log.Printf("waiting on status...")
+	var deviceFSMsMutex sync.Mutex
 	for status := range statusCh {
-
-		log.Printf("announcing status: %+v", status)
 		for _, device := range status.Devices {
-			// Configure the entity only if needed
-			if !configuredDevices[device.ID] {
-				configureEntity(mqttClient, *flagMqttPrefix, device)
+			logger.WithField("Position", device.Device.Position).Info("Announcing Position")
+
+			// Ensure thread-safe access to DeviceFSMs
+			deviceFSMsMutex.Lock()
+			deviceFSM, exists := ddapi.DeviceFSMs[device.ID]
+			if !exists {
+				deviceFSM = ddapi.ConfigureDevice(mqttHandler, &ddConn, *flagMqttPrefix, device, basicInfo)
+				ddapi.DeviceFSMs[device.ID] = deviceFSM
+				// Subscribe to MQTT
+				subscribeToMQTTCommandTopics(mqttHandler, *flagMqttPrefix)
+				logger.Info("Waiting on status updates...")
+				err := deviceFSM.FSM.Event(context.Background(), "go_online")
+				if err != nil {
+					logger.WithError(err).Error("Failed to process 'go_online' event")
+				}
+			} else {
+				logger.WithField("deviceID", device.ID).Info("Device already configured")
 			}
-			markOnline(mqttClient, *flagMqttPrefix, device.ID)
-			safePublish(mqttClient, device)
+			deviceFSMsMutex.Unlock()
+
+			// Determine the desired FSM state
+			var haState string
+			switch device.Device.Position {
+			case OPEN:
+				haState = "go_opened"
+			case CLOSE:
+				haState = "go_closed"
+			default:
+				logger.WithField("Position", device.Device.Position).Warn("Ignoring intermediate or unknown position")
+				continue // Skip this device
+			}
+
+			currentState := deviceFSM.FSM.Current()
+			if (currentState == "opening" && haState == "go_closed") ||
+				(currentState == "closing" && haState == "go_opened") {
+				logger.WithFields(logrus.Fields{
+					"currentState": currentState,
+					"haState":      haState,
+					"deviceID":     device.ID,
+				}).Info("Ignoring invalid state transition while opening or closing")
+				continue
+			}
+
+			// Process the state transition
+			err := deviceFSM.FSM.Event(context.Background(), haState)
+			if err != nil {
+				logger.WithError(err).
+					WithField("haState", haState).
+					WithField("currentState", deviceFSM.FSM.Current()).
+					Error("Failed to process event")
+			}
 		}
 	}
+
 }
 
-// safePublish sends a JSON-encoded payload to MQTT for the given device and its status, as a general announcement.
-// Aborts if this fails.
-func safePublish(c mqtt.Client, d ddapi.DoorStatusDevice) {
-	topic := fmt.Sprintf("%s/%s/state", *flagMqttPrefix, d.ID)
+// Connect to MQTT broker
+func connectToMQTT(broker, user, password string, port int) mqtt.Client {
+	opts := mqtt.NewClientOptions()
+	opts.AddBroker(fmt.Sprintf("tcp://%s:%d", broker, port))
+	opts.SetClientID("go_mqtt_client")
 
-	payload := Payload{Position: &d.Device.Position, FromController: true}
-	bytes, err := json.Marshal(payload)
-	if err != nil {
-		log.Fatalf("couldn't encode payload for mqtt: %v", err)
+	if user != "" {
+		opts.SetUsername(user)
 	}
 
-	log.Printf("publishing topic=%v payload=%+v", topic, payload)
-	tok := c.Publish(topic, 0, false, bytes)
-	<-tok.Done()
-	if tok.Error() != nil {
-		log.Fatalf("couldn't publish to topic=%s, err=%v", topic, tok.Error())
+	if password != "" {
+		opts.SetPassword(password)
 	}
+
+	client := mqtt.NewClient(opts)
+	if token := client.Connect(); token.Wait() && token.Error() != nil {
+		logger.WithError(token.Error()).Fatal("Failed to connect to MQTT broker")
+	}
+
+	return client
 }
 
-// Fetches the current status from the device. Crashes on fail.
-func safeFetchStatus(conn *dd.Conn) ddapi.DoorStatus {
-	var status ddapi.DoorStatus
-	err := conn.RPC(dd.RPC{
-		Path:   "/app/res/devices/fetch",
-		Output: &status,
+// Subscribe to MQTT topics
+func subscribeToMQTTCommandTopics(mqttHandler *ddapi.MQTTHandler, prefix string) {
+	commandTopics := fmt.Sprintf(ddapi.CommandTopicTemplate, prefix, "+")
+
+	token := mqttHandler.Client.Subscribe(commandTopics, 0, func(client mqtt.Client, msg mqtt.Message) {
+		payload := strings.ToUpper(string(msg.Payload()))
+		logger.WithField("payload", payload).WithField("commandTopics", commandTopics).Info("processing mqtt message")
+		handleCommand(msg.Topic(), payload)
 	})
-	if err != nil {
-		log.Fatalf("could not fetch status: %v", err)
+	if token.Wait() && token.Error() != nil {
+		logger.WithError(token.Error()).WithField("topic", commandTopics).Fatal("Failed to subscribe to MQTT topic")
 	}
-	return status
+	logger.Infof("Subscribed to topic: %s", commandTopics)
 }
 
-// Performs the given command. Crashes on fail.
-func safeCommand(conn *dd.Conn, deviceId string, command int) {
-	var commandInput ddapi.CommandInput
-	commandInput.DeviceId = deviceId
-	commandInput.Action.Command = command
-	err := conn.RPC(dd.RPC{
-		Path:  "/app/res/action",
-		Input: commandInput,
-	})
-	if err != nil {
-		log.Fatalf("Could not perform action: %+v err=%v", commandInput, err)
-	}
-}
-
-func configureEntity(mqttClient mqtt.Client, prefix string, device ddapi.DoorStatusDevice) {
-	discoveryTopic := fmt.Sprintf("homeassistant/cover/%s/config", device.ID)
-
-	configPayload := map[string]interface{}{
-		"name":               device.Name, // Use device name dynamically
-		"command_topic":      fmt.Sprintf("%s/%s/command", prefix, device.ID),
-		"state_topic":        fmt.Sprintf("%s/%s/state", prefix, device.ID),
-		"position_topic":     fmt.Sprintf("%s/%s/position", prefix, device.ID),
-		"set_position_topic": fmt.Sprintf("%s/%s/set_position", prefix, device.ID),
-		"availability_topic": fmt.Sprintf("%s/%s/availability", prefix, device.ID),
-		"payload_open":       "open",
-		"payload_close":      "close",
-		"payload_stop":       "stop",
-		"state_open":         "open",
-		"state_closed":       "closed",
-		"state_stopped":      "stopped",
-		"device_class":       "garage",
-		"unique_id":          fmt.Sprintf("garage_door_%s", device.ID),
+// Handle incoming MQTT messages
+func handleCommand(topic string, command string) {
+	parts := strings.Split(topic, "/")
+	if len(parts) < 3 {
+		logger.WithField("topic", topic).Warn("Invalid topic format")
+		return
 	}
 
-	payload, err := json.Marshal(configPayload)
-	if err != nil {
-		log.Fatalf("Failed to encode discovery payload: %v", err)
+	deviceID := parts[1]
+	deviceFSM, exists := ddapi.DeviceFSMs[deviceID]
+
+	if !exists {
+		logger.WithField(
+			"device",
+			deviceID).WithField(
+			"DeviceFSMs",
+			ddapi.DeviceFSMs).Fatal(
+			"Device not exists")
 	}
 
-	tok := mqttClient.Publish(discoveryTopic, 0, true, payload)
-	tok.Wait()
-	if tok.Error() != nil {
-		log.Fatalf("Failed to publish discovery payload: %v", tok.Error())
-	}
-
-	// Mark the device as online
-	markOnline(mqttClient, prefix, device.ID)
-
-	configuredDevices[device.ID] = true
-	log.Printf("Device '%s' (ID: %s) has been configured.", device.Name, device.ID)
-}
-
-func removeEntity(mqttClient mqtt.Client, prefix, deviceID string) {
-	discoveryTopic := fmt.Sprintf("homeassistant/cover/%s/config", deviceID)
-	tok := mqttClient.Publish(discoveryTopic, 0, true, "")
-	tok.Wait()
-	if tok.Error() != nil {
-		log.Printf("Failed to remove entity for device %s: %v", deviceID, tok.Error())
-	} else {
-		log.Printf("Removed entity for device %s.", deviceID)
-	}
-	delete(configuredDevices, deviceID)
-}
-
-func markAllOffline(mqttClient mqtt.Client, prefix string) {
-	for deviceID := range configuredDevices {
-		availabilityTopic := fmt.Sprintf("%s/%s/availability", prefix, deviceID)
-		tok := mqttClient.Publish(availabilityTopic, 0, true, "offline")
-		tok.Wait()
-		if tok.Error() != nil {
-			log.Printf("Failed to mark device %s offline: %v", deviceID, tok.Error())
+	switch command {
+	case "ONLINE":
+		err := deviceFSM.FSM.Event(context.Background(), "go_online")
+		if err != nil {
+			logger.WithError(err).Error("Failed to process 'go_online' event")
 		}
+	case "OFFLINE":
+		err := deviceFSM.FSM.Event(context.Background(), "go_offline")
+		if err != nil {
+			logger.WithError(err).Error("Failed to process 'go_offline' event")
+		}
+	case "GO_OPEN":
+		err := deviceFSM.FSM.Event(context.Background(), "go_open")
+		if err != nil {
+			logger.WithError(err).Error("Failed to process 'open' event")
+		}
+	case "GO_CLOSE":
+		err := deviceFSM.FSM.Event(context.Background(), "go_close")
+		if err != nil {
+			logger.WithError(err).Error("Failed to process 'close' event")
+		}
+	default:
+		logger.WithFields(logrus.Fields{
+			"deviceID": deviceID,
+			"command":  command}).Warn("Unknown command for device")
 	}
 }
 
-func markOnline(mqttClient mqtt.Client, prefix, deviceID string) {
-	availabilityTopic := fmt.Sprintf("%s/%s/availability", prefix, deviceID)
-	tok := mqttClient.Publish(availabilityTopic, 0, true, "online")
-	tok.Wait()
-	if tok.Error() != nil {
-		log.Printf("Failed to mark device %s online: %v", deviceID, tok.Error())
-	} else {
-		log.Printf("Marked device %s as online.", deviceID)
+func handleStatusUpdates(conn *dd.Conn, statusCh chan ddapi.DoorStatus) {
+	status := ddapi.SafeFetchStatus(conn)
+	statusCh <- *status
+	if err := helper.LoopMessages(context.Background(), conn, statusCh); err != nil {
+		logger.WithField("error", err).Fatal("Error reading messages")
 	}
-}
-
-type Payload struct {
-	FromController bool `json:"from_controller,omitempty"` // stub to force change
-	Position       *int `json:"position"`                  // reported by device
-	Stop           bool `json:"stop,omitempty"`            // can be triggered by caller
-	Active         bool `json:"active,omitempty"`          // whether it might be active (moving)
 }
