@@ -1,5 +1,5 @@
 name: dd add-on
-slug: dd_add_on
+slug: dd
 version: "0.0.2"
 image: "ghcr.io/gravypower/{arch}-addon-dd"
 description: dd add-on
@@ -29,8 +29,8 @@ schema:
   code: "str"
   password: "str"
   host:
-    type: "string"
-    format: "hostname"
+    type: "str"
+    pattern: "^(?!-)[A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)*$|^(\\d{1,3}\\.){3}\\d{1,3}$|^\\[([a-fA-F0-9:]+)\\]$"
   mqtt:
     server:
       type: "str?"
