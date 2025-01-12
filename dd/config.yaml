@@ -1,6 +1,6 @@
 name: dd add-on
 slug: dd
-version: "0.0.3"
+version: "0.0.4"
 image: "ghcr.io/gravypower/{arch}-addon-dd"
 description: dd add-on
 url: "https://github.com/gravypower/dd/tree/master/dd"
@@ -23,14 +23,18 @@ options:
   code: ""
   password: ""
   host: ""
-  mqtt: {}
+  mqtt:
+    server: ""
+    port: ""
+    user: ""
+    password: ""
 
 schema:
   code: str
   password: password
   host: str
   mqtt:
-    server: str
-    port: str
-    user: str
-    password: str
+    - server: str
+      port: str
+      user: str
+      password: str
