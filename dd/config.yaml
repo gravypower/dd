@@ -7,7 +7,7 @@ url: "https://github.com/gravypower/dd/tree/master/dd"
 startup: services
 
 services:
-  mqtt: need
+  - 'mqtt:need'
 
 arch:
   - armhf
@@ -26,17 +26,11 @@ options:
   mqtt: {}
 
 schema:
-  code: "str"
-  password: "str"
-  host:
-    type: "str"
+  code: str
+  password: password
+  host: str
   mqtt:
-    server:
-      type: "str?"
-    port:
-      type: "int?"
-    ca: "str?"
-    key: "str?"
-    cert: "str?"
-    user: "str?"
-    password: "str?"
+    server: str
+    port: str
+    user: str
+    password: str
