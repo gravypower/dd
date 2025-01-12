@@ -110,7 +110,7 @@ jobs:
           go build -o ./output/haus ./bin/haus/main.go
 
       - name: copy build go apps
-        run: cp ./output/* ./dd/rootfs/usr/bin/
+        run: cp ./output/* ./dd-add-on/rootfs/usr/bin/
 
       - name: Get information
         id: info
