@@ -1,29 +1,30 @@
-# https://developers.home-assistant.io/docs/add-ons/configuration#add-on-config
 name: dd add-on
-version: "0.0.2"
 slug: dd
+version: "0.0.2"
 image: "ghcr.io/gravypower/{arch}-addon-dd"
 description: dd add-on
 url: "https://github.com/gravypower/dd/tree/master/dd"
 startup: services
+
 services:
-  - mqtt: need
+  mqtt: need
+
 arch:
   - armhf
   - armv7
   - aarch64
   - amd64
   - i386
-panel_icon: "mdi:garage-open"
+
 map:
-  - type: homeassistant_config
-    read_only: false
-    path: /config
+  config: rw
+
 options:
   code: ""
   password: ""
   host: ""
   mqtt: {}
+
 schema:
   code: "str"
   password: "str"

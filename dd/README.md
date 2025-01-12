@@ -1,4 +1,4 @@
-# Home Assistant Add-on: gg add-on
+# Home Assistant Add-on: dd add-on
 
 
 ![Supports aarch64 Architecture][aarch64-shield]
