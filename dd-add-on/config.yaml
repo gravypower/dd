@@ -1,5 +1,5 @@
 name: dd add-on
-slug: dd-add-on
+slug: dd_add_on
 version: "0.0.2"
 image: "ghcr.io/gravypower/{arch}-addon-dd"
 description: dd add-on
