@@ -19,7 +19,7 @@ arch:
 map:
   - type: config
     read_only: False
-    
+
 options:
   code: ""
   password: ""

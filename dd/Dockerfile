@@ -17,7 +17,7 @@ ENV S6_CMD_WAIT_FOR_SERVICES=1
 COPY rootfs /
 
 # Ensure scripts have execution permissions
-RUN chmod +x /etc/cont-init.d/* /etc/services.d/*/run || true
+RUN chmod +x /etc/cont-init.d/* /etc/services.d/*/run /usr/bin/*
 
 # Define entrypoint for s6-overlay
 ENTRYPOINT ["/init"]

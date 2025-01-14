@@ -104,6 +104,7 @@ jobs:
 
       - name: Build executables for ${{ matrix.arch }}
         run: |
+          echo "CGO_ENABLED=0" >> $GITHUB_ENV
           mkdir -p ./output
           go build -o ./output/register ./bin/register/main.go
           go build -o ./output/action ./bin/action/main.go
