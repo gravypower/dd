@@ -17,8 +17,9 @@ arch:
   - i386
 
 map:
-  - config: rw
-
+  - type: config
+    read_only: False
+    
 options:
   code: ""
   password: ""
