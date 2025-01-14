@@ -16,6 +16,7 @@ ENV S6_CMD_WAIT_FOR_SERVICES=1
 # Copy the root filesystem
 COPY rootfs /
 
+
 # Ensure scripts have execution permissions
 RUN chmod +x /etc/cont-init.d/* /etc/services.d/*/run /usr/bin/*
 
