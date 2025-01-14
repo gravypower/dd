@@ -1,0 +1,36 @@
+#!/usr/bin/with-contenv bashio
+
+# Log the start of the initialization process
+bashio::log.info "Starting initialization for DD Add-on..."
+
+# Path to the credentials file
+CREDENTIALS_FILE="/config/creds.json"
+
+# Check if the credentials file exists
+if ! bashio::fs.file_exists "${CREDENTIALS_FILE}"; then
+    bashio::log.info "Performing registration..."
+
+    # Read configuration values
+    CODE=$(bashio::config 'code')
+    PASSWORD=$(bashio::config 'password')
+
+    bashio::log.info "Code: $CODE"
+    bashio::log.info "Password: $PASSWORD"
+
+    # Validate required configurations
+    if [ -z "${CODE}" ] || [ -z "${PASSWORD}" ]; then
+        bashio::log.error "Registration failed: 'code' or 'password' is not provided in the configuration."
+        exit 1
+    fi
+
+    # Execute registration command
+    /usr/bin/register -code "${CODE}" -password "${PASSWORD}" -creds "${CREDENTIALS_FILE}"
+    if [ $? -eq 0 ]; then
+        bashio::log.info "Registration successful. Credentials saved to ${CREDENTIALS_FILE}."
+    else
+        bashio::log.error "Registration failed. Please check the logs for more details."
+        exit 1
+    fi
+else
+    bashio::log.info "Credentials file already exists at ${CREDENTIALS_FILE}, skipping registration."
+fi

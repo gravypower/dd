@@ -5,9 +5,9 @@ image: "ghcr.io/gravypower/{arch}-addon-dd"
 description: dd add-on
 url: "https://github.com/gravypower/dd/tree/master/dd"
 startup: services
-
+init: false
 services:
-  - 'mqtt:need'
+  - "mqtt:need"
 
 arch:
   - armhf
@@ -24,10 +24,10 @@ options:
   password: ""
   host: ""
   mqtt:
-    server: ""
-    port: ""
-    user: ""
-    password: ""
+    - server: ""
+      port: ""
+      user: ""
+      password: ""
 
 schema:
   code: str
