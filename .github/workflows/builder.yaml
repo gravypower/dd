@@ -73,19 +73,6 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4.2.2
 
-      - name: Create Release
-        id: create_release
-        uses: actions/create-release@v1
-        with:
-          tag_name: ${{ github.ref_name }}
-          release_name: Release ${{ github.ref_name }}
-          draft: true
-          prerelease: false
-          body: |
-            Binaries for ${{ github.ref_name }}.
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
@@ -168,10 +155,8 @@ jobs:
             --docker-hub "ghcr.io/${{ github.repository_owner }}" \
             --addon
 
-      - name: Upload binaries to GitHub Release
-        uses: actions/upload-release-asset@v3
+      - name: Upload built binaries as artifacts
+        uses: actions/upload-artifact@v4
         with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./output/register-${{ matrix.arch }}
-          asset_name: register-${{ matrix.arch }}
-          content_type: application/octet-stream
+          name: binaries-${{ matrix.arch }}
+          path: ./output/
