@@ -38,7 +38,6 @@ func init() {
 		FullTimestamp: true,
 		ForceColors:   true,
 	})
-	logger.SetReportCaller(true)
 	logger.SetLevel(logrus.InfoLevel)
 }
 
@@ -339,7 +338,7 @@ func (dc *Conn) Connect(cred Credential) error {
 		"next":      crd.UserAccess.NextAccess,
 	}
 	logger.WithField("basicInfo", basicInfo).
-		Info("Fetched basic information about the connection")
+		Debug("Fetched basic information about the connection")
 
 	return nil
 }
@@ -363,7 +362,7 @@ func (dc *Conn) internalMessages() error {
 		return err
 	}
 
-	logger.WithField("messageCount", len(messages)).Info("Fetched messages")
+	logger.WithField("messageCount", len(messages)).Debug("Fetched messages")
 
 	for _, message := range messages {
 		logger.WithField("processID", message.ProcessID).Info("Processing message")

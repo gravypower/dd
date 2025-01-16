@@ -14,9 +14,6 @@ if ! bashio::fs.file_exists "${CREDENTIALS_FILE}"; then
     CODE=$(bashio::config 'code')
     PASSWORD=$(bashio::config 'password')
 
-    bashio::log.info "Code: $CODE"
-    bashio::log.info "Password: $PASSWORD"
-
     # Validate required configurations
     if [ -z "${CODE}" ] || [ -z "${PASSWORD}" ]; then
         bashio::log.error "Registration failed: 'code' or 'password' is not provided in the configuration."
@@ -24,7 +21,7 @@ if ! bashio::fs.file_exists "${CREDENTIALS_FILE}"; then
     fi
 
     # Execute registration command
-    /usr/bin/register -code "${CODE}" -password "${PASSWORD}" -creds "${CREDENTIALS_FILE}"
+    /usr/bin/dd/register -code "${CODE}" -password "${PASSWORD}" -creds "${CREDENTIALS_FILE}"
     if [ $? -eq 0 ]; then
         bashio::log.info "Registration successful. Credentials saved to ${CREDENTIALS_FILE}."
     else

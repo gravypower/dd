@@ -1,15 +1,27 @@
 #!/usr/bin/with-contenv bashio
 # ==============================================================================
-# Take down the S6 supervision tree when example fails
+# Start the dd service
 # s6-overlay docs: https://github.com/just-containers/s6-overlay
 # ==============================================================================
 
-declare APP_EXIT_CODE=${1}
+bashio::log.info "Starting dd..."
 
-if [[ "${APP_EXIT_CODE}" -ne 0 ]] && [[ "${APP_EXIT_CODE}" -ne 256 ]]; then
-  bashio::log.warning "Halt add-on with exit code ${APP_EXIT_CODE}"
-  echo "${APP_EXIT_CODE}" > /run/s6-linux-init-container-results/exitcode
-  exec /run/s6/basedir/bin/halt
+CREDENTIALS_FILE="/config/creds.json"
+
+# Check for MQTT configuration
+if bashio::config.has_value 'mqtt_host' && bashio::config.has_value 'mqtt_user' && bashio::config.has_value 'mqtt_password'; then
+
+    # Read configuration values
+    HOST=$(bashio::config 'host')
+    MQTT_HOST=$(bashio::config 'mqtt_host')
+    MQTT_PORT=$(bashio::config 'mqtt_port')
+    MQTT_USERNAME=$(bashio::config 'mqtt_user')
+    MQTT_PASSWORD=$(bashio::config 'mqtt_password')
+
+    bashio::log.info "All required configurations are present. Starting the dd service..."
+
+    # Execute the service
+    exec /usr/bin/dd/haus -host "${HOST}" -mqtt "${MQTT_HOST}" -mqttPort "${MQTT_PORT}" -mqttUser "${MQTT_USERNAME}" -mqttPassword "${MQTT_PASSWORD}" -creds "${CREDENTIALS_FILE}"
+else
+    bashio::log.error "MQTT config not set correctley..."
 fi
-
-bashio::log.info "Service restart after closing"

@@ -6,8 +6,27 @@
 
 bashio::log.info "Starting dd..."
 
-## Run your program
-if (bashio::config.is_empty 'mqtt' || ! (bashio::config.has_value 'mqtt.server' || bashio::config.has_value 'mqtt.user' || bashio::config.has_value 'mqtt.password')) && bashio::var.has_value "$(bashio::services 'mqtt')"; then
-  exec /usr/bin/haus -host "$(bashio::services 'mqtt' 'host')" -mqtt "$(bashio::services 'mqtt' 'port')" -mqttPort 1883 -mqttUser "$(bashio::services 'mqtt' 'password')" -mqttPassword "$(bashio::services 'mqtt' 'username')" -creds /config/creds.json
-fi
+# Check if MQTT service is available
+if bashio::services.available 'mqtt'; then
+    bashio::log.info "Using Home Assistant MQTT service."
 
+    # Log retrieved MQTT values for debugging
+    DD_HOST="$(bashio::config 'host')"
+    MQTT_HOST=$(bashio::services 'mqtt' 'host')
+    MQTT_PORT=$(bashio::services 'mqtt' 'port')
+    MQTT_USER=$(bashio::services 'mqtt' 'username')
+    MQTT_PASSWORD=$(bashio::services 'mqtt' 'password')
+
+    # Execute the service with the MQTT configuration
+    exec /usr/bin/dd/haus \
+        -host "${DD_HOST}" \
+        -mqtt "${MQTT_HOST}" \
+        -mqttPort "${MQTT_PORT}" \
+        -mqttUser "${MQTT_USER}" \
+        -mqttPassword "${MQTT_PASSWORD}" \
+        -creds /config/creds.json
+else
+    bashio::log.warning "MQTT configuration not found and Home Assistant MQTT service unavailable."
+    bashio::log.error "Ensure the MQTT service is enabled in Home Assistant."
+    exit 1
+fi

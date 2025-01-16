@@ -28,6 +28,6 @@ func SafeCommand(conn *dd.Conn, deviceID string, command int) {
 		logger.WithFields(logrus.Fields{
 			"commandInput": commandInput,
 			"error":        err,
-		}).Fatal("Could not perform action")
+		}).Fatal("Could not perform RPC action")
 	}
 }

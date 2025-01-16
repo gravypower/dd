@@ -44,7 +44,6 @@ func init() {
 		FullTimestamp: true,
 		ForceColors:   true,
 	})
-	logger.SetReportCaller(true)
 	logger.SetLevel(logrus.InfoLevel)
 }
 
@@ -72,7 +71,7 @@ func main() {
 	}
 
 	basicInfo := ddapi.FetchBasicInfo(&ddConn)
-	logger.WithField("basicInfo", basicInfo).Info("Fetched basic information about the connection")
+	logger.WithField("basicInfo", basicInfo).Debug("Fetched basic information about the connection")
 
 	stopCh := make(chan os.Signal, 1)
 	signal.Notify(stopCh, os.Interrupt, syscall.SIGTERM)
@@ -141,7 +140,7 @@ func main() {
 					"currentState": currentState,
 					"haState":      haState,
 					"deviceID":     device.ID,
-				}).Info("Ignoring invalid state transition while opening or closing")
+				}).Debug("Ignoring invalid state transition while opening or closing")
 				continue
 			}
 
@@ -192,7 +191,7 @@ func subscribeToMQTTCommandTopics(mqttHandler *ddapi.MQTTHandler, prefix string)
 	if token.Wait() && token.Error() != nil {
 		logger.WithError(token.Error()).WithField("topic", commandTopics).Fatal("Failed to subscribe to MQTT topic")
 	}
-	logger.Infof("Subscribed to topic: %s", commandTopics)
+	logger.WithField("commandTopics", commandTopics).Info("Subscribed to topic")
 }
 
 // Handle incoming MQTT messages

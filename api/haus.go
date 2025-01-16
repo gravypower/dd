@@ -23,9 +23,8 @@ const (
 )
 
 var (
-	DeviceFSMs      = make(map[string]*DeviceFSM)
-	DeviceFSMsMutex sync.Mutex
-	logger          = logrus.New()
+	DeviceFSMs = make(map[string]*DeviceFSM)
+	logger     = logrus.New()
 )
 
 func init() {
@@ -34,7 +33,6 @@ func init() {
 		FullTimestamp: true,
 		ForceColors:   true,
 	})
-	logger.SetReportCaller(true)
 	logger.SetLevel(logrus.InfoLevel)
 }
 
@@ -89,7 +87,7 @@ func (h *MQTTHandler) publishToMQTT(topic string, qos byte, retained bool, paylo
 	h.Logger.WithFields(logrus.Fields{
 		"topic":   topic,
 		"payload": payload,
-	}).Info("Message published successfully")
+	}).Debug("Message published successfully")
 	return nil
 }
 
@@ -140,6 +138,7 @@ func ConfigureDevice(handler *MQTTHandler, conn *dd.Conn, mqttPrefix string, dev
 		"optimistic":            false,
 		"retain":                false,
 		"device_class":          "garage",
+		"expire_after":          60,
 		"unique_id":             fmt.Sprintf("cover_%s", device.ID),
 		"scan_interval":         10,
 		"device": map[string]interface{}{
@@ -183,37 +182,62 @@ func NewDeviceFSM(deviceID string, mqttPrefix string, conn *dd.Conn, mqttHandler
 			},
 			fsm.Callbacks{
 				"enter_online": func(ctx context.Context, e *fsm.Event) {
-					mqttHandler.PublishAvailability(mqttPrefix, deviceID, "online")
+					err := mqttHandler.PublishAvailability(mqttPrefix, deviceID, "online")
+					if err != nil {
+						logger.WithError(err).WithField("deviceID", deviceID).Error("Error setting Device online")
+						return
+					}
 					logger.WithField("deviceID", deviceID).Info("Device is online")
 				},
 				"enter_offline": func(ctx context.Context, e *fsm.Event) {
 					err := mqttHandler.PublishAvailability(mqttPrefix, deviceID, "offline")
 					if err != nil {
-						logger.WithError(err).Info("Device is Opening")
+						logger.WithError(err).WithField("deviceID", deviceID).Error("Error setting Device offline")
+						return
 					}
 					logger.WithField("deviceID", deviceID).Info("Device is offline")
 				},
 				"enter_opening": func(ctx context.Context, e *fsm.Event) {
-					mqttHandler.PublishStatus(mqttPrefix, deviceID, "opening")
 					SafeCommand(conn, deviceID, AvailableCommands.Open)
+					err := mqttHandler.PublishStatus(mqttPrefix, deviceID, "opening")
+					if err != nil {
+						logger.WithError(err).WithField("deviceID", deviceID).Error("Error setting Device to opening")
+						return
+					}
 					logger.WithField("deviceID", deviceID).Info("Device is Opening")
 				},
 				"enter_closing": func(ctx context.Context, e *fsm.Event) {
-					mqttHandler.PublishStatus(mqttPrefix, deviceID, "closing")
 					SafeCommand(conn, deviceID, AvailableCommands.Close)
-					logger.WithField("deviceID", deviceID).Info("Device is closing")
+					err := mqttHandler.PublishStatus(mqttPrefix, deviceID, "closing")
+					if err != nil {
+						logger.WithError(err).WithField("deviceID", deviceID).Error("Error setting Device to closing")
+						return
+					}
+					logger.WithField("deviceID", deviceID).Info("Device is Closing")
 				},
 				"enter_stopping": func(ctx context.Context, e *fsm.Event) {
 					SafeCommand(conn, deviceID, AvailableCommands.Stop)
-					mqttHandler.PublishStatus(mqttPrefix, deviceID, "stopping")
-					logger.WithField("deviceID", deviceID).Info("Device is stopping")
+					err := mqttHandler.PublishStatus(mqttPrefix, deviceID, "stopping")
+					if err != nil {
+						logger.WithError(err).WithField("deviceID", deviceID).Error("Error setting Device to stopping")
+						return
+					}
+					logger.WithField("deviceID", deviceID).Info("Device is Stopping")
 				},
 				"enter_open": func(ctx context.Context, e *fsm.Event) {
-					mqttHandler.PublishStatus(mqttPrefix, deviceID, "open")
+					err := mqttHandler.PublishStatus(mqttPrefix, deviceID, "open")
+					if err != nil {
+						logger.WithError(err).WithField("deviceID", deviceID).Error("Error setting Device to opened")
+						return
+					}
 					logger.WithField("deviceID", deviceID).Info("Device is fully Opened")
 				},
 				"enter_closed": func(ctx context.Context, e *fsm.Event) {
-					mqttHandler.PublishStatus(mqttPrefix, deviceID, "closed")
+					err := mqttHandler.PublishStatus(mqttPrefix, deviceID, "closed")
+					if err != nil {
+						logger.WithError(err).WithField("deviceID", deviceID).Error("Error setting Device to closed")
+						return
+					}
 					logger.WithField("deviceID", deviceID).Info("Device is fully Closed")
 				},
 			},
