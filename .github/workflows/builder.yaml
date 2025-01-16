@@ -110,8 +110,8 @@ jobs:
           go build -o ./output/action ./bin/action/main.go
           go build -o ./output/haus ./bin/haus/main.go
 
-      - name: copy build go apps
-        run: cp ./output/* ./dd/rootfs/usr/bin/
+      - name: copy built go apps to be added to the docker container
+        run: cp ./output/* ./dd/rootfs/usr/bin/dd/
 
       - name: Get information
         id: info
