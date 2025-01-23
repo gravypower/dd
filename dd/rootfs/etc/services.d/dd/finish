@@ -1,27 +1,27 @@
-#!/usr/bin/with-contenv bashio
+#!/command/with-contenv bashio
+# shellcheck shell=bash
 # ==============================================================================
-# Start the dd service
-# s6-overlay docs: https://github.com/just-containers/s6-overlay
+# Home Assistant Community Add-on: Advanced SSH & Web Terminal
+# Take down the S6 supervision tree when the SSH daemon fails
 # ==============================================================================
+declare exit_code
+readonly exit_code_container=$(</run/s6-linux-init-container-results/exitcode)
+readonly exit_code_service="${1}"
+readonly exit_code_signal="${2}"
+readonly service="dd"
 
-bashio::log.info "Starting dd..."
+bashio::log.info \
+  "Service ${service} exited with code ${exit_code_service}" \
+  "(by signal ${exit_code_signal})"
 
-CREDENTIALS_FILE="/config/creds.json"
-
-# Check for MQTT configuration
-if bashio::config.has_value 'mqtt_host' && bashio::config.has_value 'mqtt_user' && bashio::config.has_value 'mqtt_password'; then
-
-    # Read configuration values
-    HOST=$(bashio::config 'host')
-    MQTT_HOST=$(bashio::config 'mqtt_host')
-    MQTT_PORT=$(bashio::config 'mqtt_port')
-    MQTT_USERNAME=$(bashio::config 'mqtt_user')
-    MQTT_PASSWORD=$(bashio::config 'mqtt_password')
-
-    bashio::log.info "All required configurations are present. Starting the dd service..."
-
-    # Execute the service
-    exec /usr/bin/dd/haus -host "${HOST}" -mqtt "${MQTT_HOST}" -mqttPort "${MQTT_PORT}" -mqttUser "${MQTT_USERNAME}" -mqttPassword "${MQTT_PASSWORD}" -creds "${CREDENTIALS_FILE}"
-else
-    bashio::log.error "MQTT config not set correctley..."
+if [[ "${exit_code_service}" -eq 256 ]]; then
+  if [[ "${exit_code_container}" -eq 0 ]]; then
+    echo $((128 + $exit_code_signal)) > /run/s6-linux-init-container-results/exitcode
+  fi
+  [[ "${exit_code_signal}" -eq 15 ]] && exec /run/s6/basedir/bin/halt
+elif [[ "${exit_code_service}" -ne 0 ]]; then
+  if [[ "${exit_code_container}" -eq 0 ]]; then
+    echo "${exit_code_service}" > /run/s6-linux-init-container-results/exitcode
+  fi
+  exec /run/s6/basedir/bin/halt
 fi

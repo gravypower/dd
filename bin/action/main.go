@@ -10,7 +10,7 @@ import (
 )
 
 var (
-	flagCredentialsPath = flag.String("creds", "creds.json", "path to credentials file")
+	flagCredentialsPath = flag.String("credentials", "dd-credentials.json", "path to credentials file")
 	flagHost            = flag.String("host", "", "host to connect to")
 	flagCommand         = flag.String("command", "", "command to send")
 	flagDebug           = flag.Bool("debug", false, "debug")
