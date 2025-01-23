@@ -3,32 +3,38 @@
 # Start the dd service
 # s6-overlay docs: https://github.com/just-containers/s6-overlay
 # ==============================================================================
-
 bashio::log.info "Starting dd..."
 
 # Check if MQTT service is available
 if bashio::services.available 'mqtt'; then
     bashio::log.info "Using Home Assistant MQTT service."
 
-    # Log retrieved MQTT values for debugging
+    # Retrieve config/service values
     DD_HOST="$(bashio::config 'host')"
     MQTT_HOST=$(bashio::services 'mqtt' 'host')
     MQTT_PORT=$(bashio::services 'mqtt' 'port')
     MQTT_USER=$(bashio::services 'mqtt' 'username')
     MQTT_PASSWORD=$(bashio::services 'mqtt' 'password')
-    DEBUG=$(bashio::services 'debug')
+    DEBUG=$(bashio::services 'debug')    # or bashio::config 'debug' if your add-on config uses "debug" key
 
+    # Conditionally set the debug flag
+    if [ "${DEBUG}" = "true" ]; then
+        DEBUG_FLAG="-debug"
+        bashio::log.info "Debug mode is enabled."
+    else
+        DEBUG_FLAG=""
+    fi
 
-
-    # Execute the service with the MQTT configuration
+    # Run your dd/haus command, appending the debug flag if set
     exec /usr/bin/dd/haus \
         -host "${DD_HOST}" \
         -mqtt "${MQTT_HOST}" \
         -mqttPort "${MQTT_PORT}" \
         -mqttUser "${MQTT_USER}" \
         -mqttPassword "${MQTT_PASSWORD}" \
-        -creds /config/dd-credentials.json \
-        -debug "${DEBUG}"
+        -credentials /config/dd-credentials.json \
+        ${DEBUG_FLAG}
+
 else
     bashio::log.warning "MQTT configuration not found and Home Assistant MQTT service unavailable."
     bashio::log.error "Ensure the MQTT service is enabled in Home Assistant."
