@@ -4,7 +4,7 @@
 bashio::log.info "Starting initialization for DD Add-on..."
 
 # Path to the credentials file
-CREDENTIALS_FILE="/config/creds.json"
+CREDENTIALS_FILE="/config/dd-credentials.json"
 
 # Check if the credentials file exists
 if ! bashio::fs.file_exists "${CREDENTIALS_FILE}"; then

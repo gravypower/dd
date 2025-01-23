@@ -16,6 +16,9 @@ if bashio::services.available 'mqtt'; then
     MQTT_PORT=$(bashio::services 'mqtt' 'port')
     MQTT_USER=$(bashio::services 'mqtt' 'username')
     MQTT_PASSWORD=$(bashio::services 'mqtt' 'password')
+    DEBUG=$(bashio::services 'debug')
+
+
 
     # Execute the service with the MQTT configuration
     exec /usr/bin/dd/haus \
@@ -24,7 +27,8 @@ if bashio::services.available 'mqtt'; then
         -mqttPort "${MQTT_PORT}" \
         -mqttUser "${MQTT_USER}" \
         -mqttPassword "${MQTT_PASSWORD}" \
-        -creds /config/creds.json
+        -creds /config/creds.json \
+        -debug "${DEBUG}"
 else
     bashio::log.warning "MQTT configuration not found and Home Assistant MQTT service unavailable."
     bashio::log.error "Ensure the MQTT service is enabled in Home Assistant."

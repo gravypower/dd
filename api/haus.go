@@ -133,6 +133,7 @@ func ConfigureDevice(handler *MQTTHandler, conn *dd.Conn, mqttPrefix string, dev
 		"state_closed":          "closed",
 		"state_opening":         "opening",
 		"state_closing":         "closing",
+		"state_stopping":        "stopping",
 		"payload_available":     "online",
 		"payload_not_available": "offline",
 		"optimistic":            false,
@@ -174,11 +175,13 @@ func NewDeviceFSM(deviceID string, mqttPrefix string, conn *dd.Conn, mqttHandler
 			"initial",
 			fsm.Events{
 				{Name: "go_online", Src: []string{"offline", "initial"}, Dst: "online"},
-				{Name: "go_offline", Src: []string{"online", "opening", "closing", "open", "closed"}, Dst: "offline"},
-				{Name: "go_open", Src: []string{"closed"}, Dst: "opening"},
-				{Name: "go_close", Src: []string{"open"}, Dst: "closing"},
-				{Name: "go_opened", Src: []string{"online", "opening", "open", "closing", "closed"}, Dst: "open"},
-				{Name: "go_closed", Src: []string{"online", "opening", "open", "closing", "closed"}, Dst: "closed"},
+				{Name: "go_offline", Src: []string{"online", "opening", "closing", "open", "closed", "stopping", "stopped"}, Dst: "offline"},
+				{Name: "go_open", Src: []string{"closed", "stopped"}, Dst: "opening"},
+				{Name: "go_close", Src: []string{"open", "stopped"}, Dst: "closing"},
+				{Name: "go_opened", Src: []string{"online", "opening", "open", "closing", "closed", "stopping", "stopped"}, Dst: "open"},
+				{Name: "go_closed", Src: []string{"online", "opening", "open", "closing", "closed", "stopping", "stopped"}, Dst: "closed"},
+				{Name: "go_stop", Src: []string{"online", "opening", "open", "closing", "closed"}, Dst: "stopping"},
+				{Name: "go_stopped", Src: []string{"stopping"}, Dst: "stopped"},
 			},
 			fsm.Callbacks{
 				"enter_online": func(ctx context.Context, e *fsm.Event) {
@@ -198,8 +201,8 @@ func NewDeviceFSM(deviceID string, mqttPrefix string, conn *dd.Conn, mqttHandler
 					logger.WithField("deviceID", deviceID).Info("Device is offline")
 				},
 				"enter_opening": func(ctx context.Context, e *fsm.Event) {
-					SafeCommand(conn, deviceID, AvailableCommands.Open)
 					err := mqttHandler.PublishStatus(mqttPrefix, deviceID, "opening")
+					SafeCommand(conn, deviceID, AvailableCommands.Open)
 					if err != nil {
 						logger.WithError(err).WithField("deviceID", deviceID).Error("Error setting Device to opening")
 						return
@@ -207,8 +210,8 @@ func NewDeviceFSM(deviceID string, mqttPrefix string, conn *dd.Conn, mqttHandler
 					logger.WithField("deviceID", deviceID).Info("Device is Opening")
 				},
 				"enter_closing": func(ctx context.Context, e *fsm.Event) {
-					SafeCommand(conn, deviceID, AvailableCommands.Close)
 					err := mqttHandler.PublishStatus(mqttPrefix, deviceID, "closing")
+					SafeCommand(conn, deviceID, AvailableCommands.Close)
 					if err != nil {
 						logger.WithError(err).WithField("deviceID", deviceID).Error("Error setting Device to closing")
 						return
@@ -216,13 +219,14 @@ func NewDeviceFSM(deviceID string, mqttPrefix string, conn *dd.Conn, mqttHandler
 					logger.WithField("deviceID", deviceID).Info("Device is Closing")
 				},
 				"enter_stopping": func(ctx context.Context, e *fsm.Event) {
-					SafeCommand(conn, deviceID, AvailableCommands.Stop)
+					logger.WithField("deviceID", deviceID).Info("Device is Stopping")
 					err := mqttHandler.PublishStatus(mqttPrefix, deviceID, "stopping")
+					SafeCommand(conn, deviceID, AvailableCommands.Stop)
 					if err != nil {
 						logger.WithError(err).WithField("deviceID", deviceID).Error("Error setting Device to stopping")
 						return
 					}
-					logger.WithField("deviceID", deviceID).Info("Device is Stopping")
+
 				},
 				"enter_open": func(ctx context.Context, e *fsm.Event) {
 					err := mqttHandler.PublishStatus(mqttPrefix, deviceID, "open")

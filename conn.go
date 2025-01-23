@@ -270,7 +270,7 @@ func (dc *Conn) signedRequest(conf requestConfig) (*genericRequest, error) {
 		"nextAccess": dc.nextAccess,
 	}).Debug("Generated signed request")
 
-	dc.nextAccess = int(time.Now().UnixNano()/1e6) + 5000
+	dc.nextAccess = int(time.Now().UnixNano()/1e6) + 2000
 
 	logger.WithField("nextAccess", dc.nextAccess).Debug("Next access time updated to 10 seconds later")
 
@@ -477,24 +477,19 @@ func (dc *Conn) RPC(rpc RPC) error {
 
 // waitForPid waits for the server to respond with a matching processID.
 func (dc *Conn) waitForPid(pid string) ([]byte, error) {
-	ch := make(chan *Message, 1) // Buffered to avoid blocking
+	ch := make(chan *Message, 1) // must have a buffer
 	dc.unresolvedMutex.Lock()
 	dc.unresolvedRPC[pid] = ch
 	dc.unresolvedMutex.Unlock()
 
-	logger.WithField("pid", pid).Debug("Waiting for process response")
+	logger.WithField("pid", pid).Debug("Delaying for process")
 
-	defer func() {
-		// Clean up unresolvedRPC to avoid stale entries
-		dc.unresolvedMutex.Lock()
-		delete(dc.unresolvedRPC, pid)
-		dc.unresolvedMutex.Unlock()
-	}()
+	var calls int
+	ticks := 1
 
-	timeout := time.NewTimer(time.Minute)
+	timeout := time.NewTimer(time.Second * 20)
+	tick := time.NewTicker(time.Millisecond * 350)
 	defer timeout.Stop()
-
-	tick := time.NewTicker(time.Second)
 	defer tick.Stop()
 
 	for {
@@ -502,16 +497,21 @@ func (dc *Conn) waitForPid(pid string) ([]byte, error) {
 		case m := <-ch:
 			logger.WithField("pid", pid).Debug("Received process response")
 			return m.DecodedMessage, nil
-
 		case <-tick.C:
-			logger.WithField("pid", pid).Debug("Polling messages for response")
-			if err := dc.internalMessages(); err != nil {
-				logger.WithError(err).WithField("pid", pid).Error("Error fetching messages")
+			ticks--
+			if ticks > 0 {
+				continue
+			}
+
+			err := dc.internalMessages()
+			if err != nil {
 				return nil, err
 			}
 
+			calls++
+			ticks = calls
+
 		case <-timeout.C:
-			logger.WithField("pid", pid).Warn("Timeout waiting for process response")
 			return nil, ErrTimeout
 		}
 	}

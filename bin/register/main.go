@@ -11,7 +11,7 @@ import (
 )
 
 var (
-	flagCredentialsPath = flag.String("creds", "creds.json", "path to credentials file")
+	flagCredentialsPath = flag.String("credentials", "dd-credentials.json", "path to credentials file")
 	flagShareCode       = flag.String("code", "", "share code")
 	flagPassword        = flag.String("password", "", "password")
 	flagPhoneInfo       = flag.String("phone", "API", "phone info to report")
@@ -49,7 +49,7 @@ func main() {
 	}
 
 	out.UserPassword = *flagPassword
-	
+
 	err = json.NewEncoder(f).Encode(out)
 	if err != nil {
 		log.Fatalf("can't encode response: %+v %v", out, err)

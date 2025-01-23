@@ -17,6 +17,11 @@ type CommandOutput struct {
 }
 
 func SafeCommand(conn *dd.Conn, deviceID string, command int) {
+
+	logger.WithField("deviceID", deviceID).
+		WithField("command", command).
+		Info("sending command")
+
 	var commandInput CommandInput
 	commandInput.DeviceId = deviceID
 	commandInput.Action.Command = command

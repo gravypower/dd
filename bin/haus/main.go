@@ -27,7 +27,7 @@ var logger = logrus.New()
 
 // Flags
 var (
-	flagCredentialsPath = flag.String("creds", "creds.json", "path to credentials file")
+	flagCredentialsPath = flag.String("credentials", "dd-credentials.json", "path to credentials file")
 	flagHost            = flag.String("host", "", "host to connect to")
 	flagMqtt            = flag.String("mqtt", "", "mqtt server")
 	flagMqttPort        = flag.Int("mqttPort", 1883, "mqtt port")
@@ -60,7 +60,10 @@ func main() {
 	mqttHandler := ddapi.NewMQTTHandler(mqttClient, logger)
 
 	if *flagRemoveEntity != "" {
-		mqttHandler.RemoveEntity(*flagRemoveEntity)
+		err := mqttHandler.RemoveEntity(*flagRemoveEntity)
+		if err != nil {
+			logger.WithField("*flagRemoveEntity", *flagRemoveEntity).WithError(err).Fatal("can't remove entity")
+		}
 		return
 	}
 
@@ -234,6 +237,11 @@ func handleCommand(topic string, command string) {
 		err := deviceFSM.FSM.Event(context.Background(), "go_close")
 		if err != nil {
 			logger.WithError(err).Error("Failed to process 'close' event")
+		}
+	case "STOP":
+		err := deviceFSM.FSM.Event(context.Background(), "go_stop")
+		if err != nil {
+			logger.WithError(err).Error("Failed to process 'stop' event")
 		}
 	default:
 		logger.WithFields(logrus.Fields{
