@@ -21,7 +21,7 @@ if ! bashio::fs.file_exists "${CREDENTIALS_FILE}"; then
     fi
 
     # Execute registration command
-    /usr/bin/dd/register -code "${CODE}" -password "${PASSWORD}" -creds "${CREDENTIALS_FILE}"
+    /usr/bin/dd/register -code "${CODE}" -password "${PASSWORD}" -credentials "${CREDENTIALS_FILE}"
     if [ $? -eq 0 ]; then
         bashio::log.info "Registration successful. Credentials saved to ${CREDENTIALS_FILE}."
     else

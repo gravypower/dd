@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/samthor/dd"
@@ -58,6 +59,13 @@ func main() {
 	// MQTT connection setup
 	mqttClient := connectToMQTT(*flagMqtt, *flagMqttUser, *flagMqttPassword, *flagMqttPort)
 	mqttHandler := ddapi.NewMQTTHandler(mqttClient, logger)
+
+	// Wait for MQTT to be available before proceeding to init state machine
+	for !mqttClient.IsConnectionOpen() && !mqttClient.IsConnected() {
+		logger.Warn("MQTT not available yet; waiting before initializing state machine...")
+		time.Sleep(5 * time.Second)
+	}
+	logger.Info("MQTT is connected; proceeding with initialization")
 
 	if *flagRemoveEntity != "" {
 		err := mqttHandler.RemoveEntity(*flagRemoveEntity)
@@ -166,6 +174,17 @@ func connectToMQTT(broker, user, password string, port int) mqtt.Client {
 	opts.AddBroker(fmt.Sprintf("tcp://%s:%d", broker, port))
 	opts.SetClientID("go_mqtt_client")
 
+	// Make MQTT connection resilient
+	opts.SetAutoReconnect(true)
+	opts.SetConnectRetry(true)
+	opts.SetConnectRetryInterval(5 * time.Second)
+	opts.SetOnConnectHandler(func(c mqtt.Client) {
+		logger.Info("Connected to MQTT broker")
+	})
+	opts.SetConnectionLostHandler(func(c mqtt.Client, err error) {
+		logger.WithError(err).Warn("MQTT connection lost; will retry")
+	})
+
 	if user != "" {
 		opts.SetUsername(user)
 	}
@@ -175,8 +194,8 @@ func connectToMQTT(broker, user, password string, port int) mqtt.Client {
 	}
 
 	client := mqtt.NewClient(opts)
-	if token := client.Connect(); token.Wait() && token.Error() != nil {
-		logger.WithError(token.Error()).Fatal("Failed to connect to MQTT broker")
+	if token := client.Connect(); token.WaitTimeout(3*time.Second) && token.Error() != nil {
+		logger.WithError(token.Error()).Warn("Initial MQTT connect failed; will keep retrying in background")
 	}
 
 	return client
