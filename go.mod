@@ -1,16 +1,18 @@
 module github.com/samthor/dd
 
-go 1.20
+go 1.23.0
+
+toolchain go1.23.4
 
 require (
-	github.com/eclipse/paho.mqtt.golang v1.4.2
-	github.com/looplab/fsm v1.0.2
+	github.com/eclipse/paho.mqtt.golang v1.5.0
+	github.com/looplab/fsm v1.0.3
 	github.com/sirupsen/logrus v1.9.3
 )
 
 require (
-	github.com/gorilla/websocket v1.4.2 // indirect
-	golang.org/x/net v0.0.0-20200425230154-ff2c4b7c35a0 // indirect
-	golang.org/x/sync v0.0.0-20210220032951-036812b2e83c // indirect
-	golang.org/x/sys v0.0.0-20220715151400-c0bba94af5f8 // indirect
+	github.com/gorilla/websocket v1.5.3 // indirect
+	golang.org/x/net v0.43.0 // indirect
+	golang.org/x/sync v0.16.0 // indirect
+	golang.org/x/sys v0.35.0 // indirect
 )

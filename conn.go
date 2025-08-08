@@ -21,6 +21,14 @@ const (
 	DefaultVersion = "2.21.1"
 )
 
+// Timing constants for coordinating request windows with the server (milliseconds).
+const (
+	// NextAccessBumpMillis is added after signing a request to ensure increasing timestamps.
+	NextAccessBumpMillis = 1000
+	// NextAccessResetAheadMillis resets nextAccess to a short time in the future after signing.
+	NextAccessResetAheadMillis = 2000
+)
+
 const (
 	DefaultTarget SimpleRequestTarget = iota
 	SDKTarget
@@ -74,7 +82,7 @@ func (dc *Conn) SimpleRequest(arg SimpleRequest) error {
 
 	jsonBytes, err := json.Marshal(arg.Input)
 	if err != nil {
-		return err
+		return fmt.Errorf("marshal input: %w", err)
 	}
 
 	var url string
@@ -91,7 +99,7 @@ func (dc *Conn) SimpleRequest(arg SimpleRequest) error {
 
 	req, err := http.NewRequest("POST", url, bytes.NewBuffer(jsonBytes))
 	if err != nil {
-		return err
+		return fmt.Errorf("new request: %w", err)
 	}
 
 	logger.WithFields(logrus.Fields{
@@ -108,17 +116,14 @@ func (dc *Conn) SimpleRequest(arg SimpleRequest) error {
 	req.Header.Set("version", version)
 	req.Header.Set("platform", "android")
 
-	// If we haven't yet created an HTTP client, do so now
-	if dc.client == nil {
-		customTransport := http.DefaultTransport.(*http.Transport).Clone()
-		// WARNING: For production, you should NOT use InsecureSkipVerify = true.
-		customTransport.TLSClientConfig.InsecureSkipVerify = true
-		dc.client = &http.Client{Transport: customTransport}
+	// Ensure HTTP client is initialized
+	if err := dc.ensureHTTPClient(); err != nil {
+		return err
 	}
 
 	resp, err := dc.client.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("do request: %w", err)
 	}
 	defer func(Body io.ReadCloser) {
 		if cerr := Body.Close(); cerr != nil {
@@ -128,7 +133,7 @@ func (dc *Conn) SimpleRequest(arg SimpleRequest) error {
 
 	responseBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return err
+		return fmt.Errorf("read body: %w", err)
 	}
 
 	logger.WithFields(logrus.Fields{
@@ -232,17 +237,17 @@ func (dc *Conn) signedRequest(conf requestConfig) (*genericRequest, error) {
 		time.Sleep(waitTime)
 	}
 
-	// Update nextAccess after waiting
+	// Update nextAccess after waiting to ensure a monotonic-ish increasing value
 	localTime = int(time.Now().UnixNano() / 1e6)
 	if localTime > dc.nextAccess {
 		dc.nextAccess = localTime
 	}
-	dc.nextAccess += 1000 // Add one second, time in millis
+	dc.nextAccess += NextAccessBumpMillis
 
 	// Create an encrypted request
 	c, err := NewEncCipher(dc.phoneSecret, dc.nextAccess)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("init cipher: %w", err)
 	}
 	encData := base64.StdEncoding.EncodeToString(c.Encrypt(conf.data))
 
@@ -270,11 +275,27 @@ func (dc *Conn) signedRequest(conf requestConfig) (*genericRequest, error) {
 		"nextAccess": dc.nextAccess,
 	}).Debug("Generated signed request")
 
-	dc.nextAccess = int(time.Now().UnixNano()/1e6) + 2000
+	dc.nextAccess = int(time.Now().UnixNano()/1e6) + NextAccessResetAheadMillis
 
-	logger.WithField("nextAccess", dc.nextAccess).Debug("Next access time updated to 10 seconds later")
+	logger.WithFields(logrus.Fields{
+		"nextAccess": dc.nextAccess,
+		"aheadMs":    NextAccessResetAheadMillis,
+	}).Debug("Next access time updated")
 
 	return greq, nil
+}
+
+// Close shuts down this Conn.
+// ensureHTTPClient initializes the HTTP client if it doesn't exist.
+func (dc *Conn) ensureHTTPClient() error {
+	if dc.client != nil {
+		return nil
+	}
+	customTransport := http.DefaultTransport.(*http.Transport).Clone()
+	// WARNING: For production, you should NOT use InsecureSkipVerify = true.
+	customTransport.TLSClientConfig.InsecureSkipVerify = true
+	dc.client = &http.Client{Transport: customTransport}
+	return nil
 }
 
 // Close shuts down this Conn.

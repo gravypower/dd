@@ -95,7 +95,7 @@ func main() {
 		logger.Info("Shutting down gracefully")
 		for deviceID, fsm := range ddapi.DeviceFSMs {
 			logger.Infof("Shutting down device: %s", deviceID)
-			err := fsm.FSM.Event(context.Background(), "go_offline")
+   err := fsm.Trigger(context.Background(), "go_offline")
 			if err != nil {
 				logger.WithField("deviceID", deviceID).WithError(err).Error("Failed to set device to offline")
 			} else {
@@ -123,7 +123,7 @@ func main() {
 				// Subscribe to MQTT
 				subscribeToMQTTCommandTopics(mqttHandler, *flagMqttPrefix)
 				logger.Info("Waiting on status updates...")
-				err := deviceFSM.FSM.Event(context.Background(), "go_online")
+				err := deviceFSM.Trigger(context.Background(), "go_online")
 				if err != nil {
 					logger.WithError(err).Error("Failed to process 'go_online' event")
 				}
@@ -144,7 +144,7 @@ func main() {
 				continue // Skip this device
 			}
 
-			currentState := deviceFSM.FSM.Current()
+   currentState := deviceFSM.Current()
 			if (currentState == "opening" && haState == "go_closed") ||
 				(currentState == "closing" && haState == "go_opened") {
 				logger.WithFields(logrus.Fields{
@@ -156,11 +156,11 @@ func main() {
 			}
 
 			// Process the state transition
-			err := deviceFSM.FSM.Event(context.Background(), haState)
+   err := deviceFSM.Trigger(context.Background(), haState)
 			if err != nil {
 				logger.WithError(err).
 					WithField("haState", haState).
-					WithField("currentState", deviceFSM.FSM.Current()).
+     WithField("currentState", deviceFSM.Current()).
 					Error("Failed to process event")
 			}
 		}
@@ -238,27 +238,27 @@ func handleCommand(topic string, command string) {
 
 	switch command {
 	case "ONLINE":
-		err := deviceFSM.FSM.Event(context.Background(), "go_online")
+  err := deviceFSM.Trigger(context.Background(), "go_online")
 		if err != nil {
 			logger.WithError(err).Error("Failed to process 'go_online' event")
 		}
 	case "OFFLINE":
-		err := deviceFSM.FSM.Event(context.Background(), "go_offline")
+  err := deviceFSM.Trigger(context.Background(), "go_offline")
 		if err != nil {
 			logger.WithError(err).Error("Failed to process 'go_offline' event")
 		}
 	case "GO_OPEN":
-		err := deviceFSM.FSM.Event(context.Background(), "go_open")
+  err := deviceFSM.Trigger(context.Background(), "go_open")
 		if err != nil {
 			logger.WithError(err).Error("Failed to process 'open' event")
 		}
 	case "GO_CLOSE":
-		err := deviceFSM.FSM.Event(context.Background(), "go_close")
+  err := deviceFSM.Trigger(context.Background(), "go_close")
 		if err != nil {
 			logger.WithError(err).Error("Failed to process 'close' event")
 		}
 	case "STOP":
-		err := deviceFSM.FSM.Event(context.Background(), "go_stop")
+  err := deviceFSM.Trigger(context.Background(), "go_stop")
 		if err != nil {
 			logger.WithError(err).Error("Failed to process 'stop' event")
 		}

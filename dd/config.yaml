@@ -1,6 +1,6 @@
 name: dd add-on
 slug: dd
-version: "0.1.5"
+version: "0.1.6"
 image: "ghcr.io/gravypower/{arch}-addon-dd"
 description: dd add-on
 url: "https://github.com/gravypower/dd/tree/master/dd"
