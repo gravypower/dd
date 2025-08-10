@@ -102,7 +102,7 @@ func main() {
 		logger.Info("Termination signal received")
 		// Ensure resources are cleaned up
 		logger.Info("Shutting down gracefully")
-		// Cancel background status loop first
+		// Cancel the background status loop first
 		cancel()
 		for deviceID, fsm := range ddapi.DeviceFSMs {
 			logger.Infof("Shutting down device: %s", deviceID)
