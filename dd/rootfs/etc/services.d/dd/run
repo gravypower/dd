@@ -20,7 +20,7 @@ MQTT_HOST=$(bashio::services 'mqtt' 'host')
 MQTT_PORT=$(bashio::services 'mqtt' 'port')
 MQTT_USER=$(bashio::services 'mqtt' 'username')
 MQTT_PASSWORD=$(bashio::services 'mqtt' 'password')
-DEBUG=$(bashio::services 'debug')    # or bashio::config 'debug' if your add-on config uses "debug" key
+DEBUG=$(bashio::config 'debug')    # read from add-on config; was incorrectly using services 'debug'
 
 # Conditionally set the debug flag
 if [ "${DEBUG}" = "true" ]; then
