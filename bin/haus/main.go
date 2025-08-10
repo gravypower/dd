@@ -60,8 +60,14 @@ func main() {
 	mqttClient := connectToMQTT(*flagMqtt, *flagMqttUser, *flagMqttPassword, *flagMqttPort)
 	mqttHandler := ddapi.NewMQTTHandler(mqttClient, logger)
 
-	// Wait for MQTT to be available before proceeding to init state machine
-	for !mqttClient.IsConnectionOpen() && !mqttClient.IsConnected() {
+	// Wait for MQTT to be available before proceeding to init state machine (bounded)
+	maxWait := 60 * time.Second
+	deadline := time.Now().Add(maxWait)
+	for !mqttClient.IsConnected() {
+		if time.Now().After(deadline) {
+			logger.Error("MQTT did not connect within 60s. Check broker address, port, and credentials (username/password). Exiting.")
+			os.Exit(1)
+		}
 		logger.Warn("MQTT not available yet; waiting before initializing state machine...")
 		time.Sleep(5 * time.Second)
 	}
@@ -84,6 +90,9 @@ func main() {
 	basicInfo := ddapi.FetchBasicInfo(&ddConn)
 	logger.WithField("basicInfo", basicInfo).Debug("Fetched basic information about the connection")
 
+	// Context for background goroutines
+	ctx, cancel := context.WithCancel(context.Background())
+
 	stopCh := make(chan os.Signal, 1)
 	signal.Notify(stopCh, os.Interrupt, syscall.SIGTERM)
 
@@ -93,9 +102,11 @@ func main() {
 		logger.Info("Termination signal received")
 		// Ensure resources are cleaned up
 		logger.Info("Shutting down gracefully")
+		// Cancel background status loop first
+		cancel()
 		for deviceID, fsm := range ddapi.DeviceFSMs {
 			logger.Infof("Shutting down device: %s", deviceID)
-   err := fsm.Trigger(context.Background(), "go_offline")
+			err := fsm.Trigger(context.Background(), "go_offline")
 			if err != nil {
 				logger.WithField("deviceID", deviceID).WithError(err).Error("Failed to set device to offline")
 			} else {
@@ -107,7 +118,7 @@ func main() {
 	}()
 
 	statusCh := make(chan ddapi.DoorStatus)
-	go handleStatusUpdates(&ddConn, statusCh)
+	go handleStatusUpdates(ctx, &ddConn, statusCh)
 
 	var deviceFSMsMutex sync.Mutex
 	for status := range statusCh {
@@ -120,8 +131,7 @@ func main() {
 			if !exists {
 				deviceFSM = ddapi.ConfigureDevice(mqttHandler, &ddConn, *flagMqttPrefix, device, basicInfo)
 				ddapi.DeviceFSMs[device.ID] = deviceFSM
-				// Subscribe to MQTT
-				subscribeToMQTTCommandTopics(mqttHandler, *flagMqttPrefix)
+				// Subscriptions are handled in MQTT OnConnect handler
 				logger.Info("Waiting on status updates...")
 				err := deviceFSM.Trigger(context.Background(), "go_online")
 				if err != nil {
@@ -144,7 +154,18 @@ func main() {
 				continue // Skip this device
 			}
 
-   currentState := deviceFSM.Current()
+			currentState := deviceFSM.Current()
+			// Skip redundant transitions to the same final state (idempotent)
+			if (currentState == "closed" && haState == "go_closed") ||
+				(currentState == "open" && haState == "go_opened") {
+				logger.WithFields(logrus.Fields{
+					"currentState": currentState,
+					"haState":      haState,
+					"deviceID":     device.ID,
+				}).Debug("Ignoring redundant transition to the same state")
+				continue
+			}
+
 			if (currentState == "opening" && haState == "go_closed") ||
 				(currentState == "closing" && haState == "go_opened") {
 				logger.WithFields(logrus.Fields{
@@ -156,11 +177,11 @@ func main() {
 			}
 
 			// Process the state transition
-   err := deviceFSM.Trigger(context.Background(), haState)
+			err := deviceFSM.Trigger(context.Background(), haState)
 			if err != nil {
 				logger.WithError(err).
 					WithField("haState", haState).
-     WithField("currentState", deviceFSM.Current()).
+					WithField("currentState", deviceFSM.Current()).
 					Error("Failed to process event")
 			}
 		}
@@ -172,14 +193,24 @@ func main() {
 func connectToMQTT(broker, user, password string, port int) mqtt.Client {
 	opts := mqtt.NewClientOptions()
 	opts.AddBroker(fmt.Sprintf("tcp://%s:%d", broker, port))
-	opts.SetClientID("go_mqtt_client")
+	// Use a stable client ID for a persistent session
+	opts.SetClientID("dd_haus")
+
+	// Networking and timeouts
+	opts.SetConnectTimeout(5 * time.Second)
+	opts.SetWriteTimeout(5 * time.Second)
 
 	// Make MQTT connection resilient
 	opts.SetAutoReconnect(true)
 	opts.SetConnectRetry(true)
 	opts.SetConnectRetryInterval(5 * time.Second)
+	// Enable persistent session and automatic resubscription
+	opts.SetCleanSession(false)
+	opts.SetResumeSubs(true)
 	opts.SetOnConnectHandler(func(c mqtt.Client) {
 		logger.Info("Connected to MQTT broker")
+		// Subscribe (or resubscribe) on every (re)connect
+		subscribeToMQTTCommandTopics(ddapi.NewMQTTHandler(c, logger), *flagMqttPrefix)
 	})
 	opts.SetConnectionLostHandler(func(c mqtt.Client, err error) {
 		logger.WithError(err).Warn("MQTT connection lost; will retry")
@@ -194,8 +225,16 @@ func connectToMQTT(broker, user, password string, port int) mqtt.Client {
 	}
 
 	client := mqtt.NewClient(opts)
-	if token := client.Connect(); token.WaitTimeout(3*time.Second) && token.Error() != nil {
-		logger.WithError(token.Error()).Warn("Initial MQTT connect failed; will keep retrying in background")
+	if token := client.Connect(); !token.WaitTimeout(3 * time.Second) {
+		logger.Warn("Initial MQTT connect timed out; auto-reconnect will continue in background")
+	} else if err := token.Error(); err != nil {
+		// Detect common authentication/authorization failures and fail fast
+		errStr := strings.ToLower(err.Error())
+		if strings.Contains(errStr, "not authorized") || strings.Contains(errStr, "not authorised") || strings.Contains(errStr, "bad user name or password") || strings.Contains(errStr, "unauthor") {
+			logger.WithError(err).Error("MQTT authentication failed. Check username/password and broker ACLs.")
+			os.Exit(1)
+		}
+		logger.WithError(err).Warn("Initial MQTT connect failed; will keep retrying in background")
 	}
 
 	return client
@@ -205,13 +244,24 @@ func connectToMQTT(broker, user, password string, port int) mqtt.Client {
 func subscribeToMQTTCommandTopics(mqttHandler *ddapi.MQTTHandler, prefix string) {
 	commandTopics := fmt.Sprintf(ddapi.CommandTopicTemplate, prefix, "+")
 
+	// If not connected, skip subscribing; OnConnect will invoke us again
+	if !mqttHandler.Client.IsConnected() {
+		logger.WithField("topic", commandTopics).Warn("Skipping subscribe: MQTT not connected")
+		return
+	}
+
 	token := mqttHandler.Client.Subscribe(commandTopics, 0, func(client mqtt.Client, msg mqtt.Message) {
 		payload := strings.ToUpper(string(msg.Payload()))
 		logger.WithField("payload", payload).WithField("commandTopics", commandTopics).Info("processing mqtt message")
 		handleCommand(msg.Topic(), payload)
 	})
-	if token.Wait() && token.Error() != nil {
-		logger.WithError(token.Error()).WithField("topic", commandTopics).Fatal("Failed to subscribe to MQTT topic")
+	if !token.WaitTimeout(3 * time.Second) {
+		logger.WithField("topic", commandTopics).Warn("Subscribe timed out; will retry on next reconnect")
+		return
+	}
+	if err := token.Error(); err != nil {
+		logger.WithError(err).WithField("topic", commandTopics).Warn("Subscribe failed; will retry on next reconnect")
+		return
 	}
 	logger.WithField("commandTopics", commandTopics).Info("Subscribed to topic")
 }
@@ -238,27 +288,27 @@ func handleCommand(topic string, command string) {
 
 	switch command {
 	case "ONLINE":
-  err := deviceFSM.Trigger(context.Background(), "go_online")
+		err := deviceFSM.Trigger(context.Background(), "go_online")
 		if err != nil {
 			logger.WithError(err).Error("Failed to process 'go_online' event")
 		}
 	case "OFFLINE":
-  err := deviceFSM.Trigger(context.Background(), "go_offline")
+		err := deviceFSM.Trigger(context.Background(), "go_offline")
 		if err != nil {
 			logger.WithError(err).Error("Failed to process 'go_offline' event")
 		}
 	case "GO_OPEN":
-  err := deviceFSM.Trigger(context.Background(), "go_open")
+		err := deviceFSM.Trigger(context.Background(), "go_open")
 		if err != nil {
 			logger.WithError(err).Error("Failed to process 'open' event")
 		}
 	case "GO_CLOSE":
-  err := deviceFSM.Trigger(context.Background(), "go_close")
+		err := deviceFSM.Trigger(context.Background(), "go_close")
 		if err != nil {
 			logger.WithError(err).Error("Failed to process 'close' event")
 		}
 	case "STOP":
-  err := deviceFSM.Trigger(context.Background(), "go_stop")
+		err := deviceFSM.Trigger(context.Background(), "go_stop")
 		if err != nil {
 			logger.WithError(err).Error("Failed to process 'stop' event")
 		}
@@ -269,10 +319,10 @@ func handleCommand(topic string, command string) {
 	}
 }
 
-func handleStatusUpdates(conn *dd.Conn, statusCh chan ddapi.DoorStatus) {
+func handleStatusUpdates(ctx context.Context, conn *dd.Conn, statusCh chan ddapi.DoorStatus) {
 	status := ddapi.SafeFetchStatus(conn)
 	statusCh <- *status
-	if err := helper.LoopMessages(context.Background(), conn, statusCh); err != nil {
+	if err := helper.LoopMessages(ctx, conn, statusCh); err != nil {
 		logger.WithField("error", err).Fatal("Error reading messages")
 	}
 }

@@ -4,22 +4,24 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"sync"
+	"time"
+
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/looplab/fsm"
 	"github.com/samthor/dd"
 	"github.com/sirupsen/logrus"
-	"os"
-	"sync"
-	"time"
 )
 
 const (
-	CommandTopicTemplate             = "%s/%s/command"
-	StateTopicTemplate               = "%s/%s/state"
-	PositionTopicTemplate            = "%s/%s/position"
-	SetPositionTopicTemplate         = "%s/%s/set_position"
-	AvailabilityTopicTemplate        = "%s/%s/availability"
-	HomeAssistantConfigTopicTemplate = "homeassistant/cover/%s/config"
+	CommandTopicTemplate                           = "%s/%s/command"
+	StateTopicTemplate                             = "%s/%s/state"
+	PositionTopicTemplate                          = "%s/%s/position"
+	SetPositionTopicTemplate                       = "%s/%s/set_position"
+	AvailabilityTopicTemplate                      = "%s/%s/availability"
+	HomeAssistantConfigTopicTemplate               = "homeassistant/cover/%s/config"
+	publishTimeout                   time.Duration = 10 * time.Second
 )
 
 var (
@@ -54,10 +56,10 @@ type DeviceFSM struct {
 	mu          sync.Mutex
 }
 
-// Trigger triggers an event on the device FSM in a thread-safe way
+// Trigger triggers an event on the device FSM.
+// Note: Do not hold d.mu while invoking FSM.Event, as callbacks (e.g., enter_state)
+// also acquire d.mu and would deadlock. The FSM itself handles its internal concurrency.
 func (d *DeviceFSM) Trigger(ctx context.Context, event string) error {
-	d.mu.Lock()
-	defer d.mu.Unlock()
 	return d.FSM.Event(ctx, event)
 }
 
@@ -84,9 +86,19 @@ func (h *MQTTHandler) publishToMQTT(topic string, qos byte, retained bool, paylo
 	h.Mutex.Lock()
 	defer h.Mutex.Unlock()
 
+	if !h.Client.IsConnected() {
+		err := fmt.Errorf("mqtt not connected; cannot publish to %s", topic)
+		h.Logger.WithFields(logrus.Fields{
+			"topic":   topic,
+			"payload": payload,
+			"error":   err,
+		}).Error("Publish skipped: not connected")
+		return err
+	}
+
 	tok := h.Client.Publish(topic, qos, retained, payload)
-	if ok := tok.WaitTimeout(3 * time.Second); !ok {
-		err := tok.Error()
+	if ok := tok.WaitTimeout(publishTimeout); !ok {
+		err := fmt.Errorf("mqtt publish to %s timed out after %s", topic, publishTimeout)
 		h.Logger.WithFields(logrus.Fields{
 			"topic":   topic,
 			"payload": payload,
@@ -118,13 +130,13 @@ func (h *MQTTHandler) PublishStatus(prefix, deviceID, status string) error {
 // PublishAvailability publishes a device's availability to the appropriate topic
 func (h *MQTTHandler) PublishAvailability(prefix, deviceID, availability string) error {
 	topic := fmt.Sprintf(AvailabilityTopicTemplate, prefix, deviceID)
-	return h.publishToMQTT(topic, 0, false, availability)
+	return h.publishToMQTT(topic, 0, true, availability)
 }
 
 // RemoveEntity removes the Home Assistant entity for the device
 func (h *MQTTHandler) RemoveEntity(deviceID string) error {
 	discoveryTopic := fmt.Sprintf(HomeAssistantConfigTopicTemplate, deviceID)
-	err := h.publishToMQTT(discoveryTopic, 0, false, "")
+	err := h.publishToMQTT(discoveryTopic, 0, true, "")
 	if err != nil {
 		h.Logger.WithFields(logrus.Fields{
 			"deviceID": deviceID,
@@ -174,8 +186,20 @@ func ConfigureDevice(handler *MQTTHandler, conn *dd.Conn, mqttPrefix string, dev
 		return nil
 	}
 
-	if err := handler.publishToMQTT(configTopic, 0, false, bytes); err != nil {
-		logger.WithField("err", err).Fatal("Couldn't publish config")
+	if err := handler.publishToMQTT(configTopic, 0, true, bytes); err != nil {
+		logger.WithField("err", err).Error("Couldn't publish config; will retry in background")
+		// Retry in background without killing the process, as broker/network may be slow on startup
+		go func() {
+			for attempt := 1; attempt <= 5; attempt++ {
+				delay := time.Duration(attempt) * 5 * time.Second
+				time.Sleep(delay)
+				if err := handler.publishToMQTT(configTopic, 0, true, bytes); err == nil {
+					logger.WithFields(logrus.Fields{"attempt": attempt}).Info("Published config successfully after retry")
+					return
+				}
+				logger.WithFields(logrus.Fields{"attempt": attempt}).Warn("Retry to publish config failed; will retry again if attempts remain")
+			}
+		}()
 	}
 
 	DeviceFSMs[device.ID] = NewDeviceFSM(device.ID, mqttPrefix, conn, handler)
@@ -196,8 +220,8 @@ func NewDeviceFSM(deviceID string, mqttPrefix string, conn *dd.Conn, mqttHandler
 		fsm.Events{
 			{Name: "go_online", Src: []string{"offline", "initial"}, Dst: "online"},
 			{Name: "go_offline", Src: []string{"online", "opening", "closing", "open", "closed", "stopping", "stopped"}, Dst: "offline"},
-			{Name: "go_open", Src: []string{"closed", "stopped"}, Dst: "opening"},
-			{Name: "go_close", Src: []string{"open", "stopped"}, Dst: "closing"},
+			{Name: "go_open", Src: []string{"online", "closed", "stopped"}, Dst: "opening"},
+			{Name: "go_close", Src: []string{"online", "open", "stopped"}, Dst: "closing"},
 			{Name: "go_opened", Src: []string{"online", "opening", "open", "closing", "closed", "stopping", "stopped"}, Dst: "open"},
 			{Name: "go_closed", Src: []string{"online", "opening", "open", "closing", "closed", "stopping", "stopped"}, Dst: "closed"},
 			{Name: "go_stop", Src: []string{"online", "opening", "open", "closing", "closed"}, Dst: "stopping"},
