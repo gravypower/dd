@@ -4,6 +4,12 @@ All notable changes to this add-on will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.3.3] - 2025-12-02
+
+### Fixed
+- Removed incorrect watchdog configuration that was causing add-on to restart every ~4 minutes
+- Watchdog was checking MQTT broker TCP port instead of add-on health (add-on is a client, not a server)
+
 ## [0.3.2] - 2025-12-02
 
 ### Fixed

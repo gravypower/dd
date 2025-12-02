@@ -18,7 +18,8 @@ Based on official Home Assistant documentation:
 |-------|-------|---------|
 | `startup` | `application` | Controls when add-on starts (after core services) |
 | `boot` | `auto` | Automatically start on Home Assistant boot |
-| `watchdog` | `tcp://[HOST]:1883` | Health monitoring via MQTT TCP connection |
+
+**Note:** Watchdog monitoring was removed in v0.3.3 as it was causing unnecessary restarts (add-on is an MQTT client, not a server).
 
 ### ✅ Updated Metadata
 
@@ -232,21 +233,21 @@ After deploying these updates:
 
 1. **Configuration Validation:**
    - Install/update add-on in Home Assistant
-   - Verify configuration UI shows all new MQTT options
-   - Test with both HA MQTT service and custom broker
+   - Verify minimal config works without MQTT section (uses HA MQTT automatically)
+   - Test with custom broker configuration if needed
 
-2. **Watchdog Monitoring:**
-   - Check Supervisor logs for watchdog health checks
-   - Verify MQTT connection monitoring works
-
-3. **AppArmor Security:**
+2. **AppArmor Security:**
    - Review system logs for any AppArmor denials
    - Ensure network and file access permissions work
 
-4. **Position Control:**
+3. **Position Control:**
    - Test slider in Home Assistant UI
    - Verify position updates in real-time
    - Try preset positions (20%, 68%, etc.)
+
+4. **Stability:**
+   - Verify add-on runs continuously without restarts
+   - Check logs for any termination signals or crashes
 
 ## Summary
 
