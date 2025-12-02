@@ -96,6 +96,63 @@ func CommandForRatio(position int) int {
 	}
 }
 
+// GetCommandForPosition maps a position percentage (0-100) to the appropriate device command.
+// Uses granular percentage commands (5% increments) when available.
+func GetCommandForPosition(position int) int {
+	// Clamp position to valid range
+	if position < 0 {
+		position = 0
+	}
+	if position > 100 {
+		position = 100
+	}
+
+	switch {
+	case position == 0:
+		return AvailableCommands.Close
+	case position <= 5:
+		return AvailableCommands.OpenPercent05
+	case position <= 10:
+		return AvailableCommands.OpenPercent10
+	case position <= 15:
+		return AvailableCommands.OpenPercent15
+	case position <= 20:
+		return AvailableCommands.OpenPercent20
+	case position <= 25:
+		return AvailableCommands.OpenPercent25
+	case position <= 30:
+		return AvailableCommands.OpenPercent30
+	case position <= 35:
+		return AvailableCommands.OpenPercent35
+	case position <= 40:
+		return AvailableCommands.OpenPercent40
+	case position <= 45:
+		return AvailableCommands.OpenPercent45
+	case position <= 50:
+		return AvailableCommands.OpenPercent50
+	case position <= 55:
+		return AvailableCommands.OpenPercent55
+	case position <= 60:
+		return AvailableCommands.OpenPercent60
+	case position <= 65:
+		return AvailableCommands.OpenPercent65
+	case position <= 70:
+		return AvailableCommands.OpenPercent70
+	case position <= 75:
+		return AvailableCommands.OpenPercent75
+	case position <= 80:
+		return AvailableCommands.OpenPercent80
+	case position <= 85:
+		return AvailableCommands.OpenPercent85
+	case position <= 90:
+		return AvailableCommands.OpenPercent90
+	case position <= 95:
+		return AvailableCommands.OpenPercent95
+	default: // 96-100
+		return AvailableCommands.Open
+	}
+}
+
 // SafeFetchStatus fetches the door status and returns an error if it fails.
 // This function no longer calls Fatal() to allow graceful error handling.
 func SafeFetchStatus(conn *dd.Conn) (*DoorStatus, error) {

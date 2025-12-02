@@ -24,6 +24,12 @@ const (
 	publishTimeout                   time.Duration = 10 * time.Second
 )
 
+// Door position constants (0-100 scale)
+const (
+	PositionClosed = 0
+	PositionOpen   = 100
+)
+
 var (
 	DeviceFSMs = make(map[string]*DeviceFSM)
 	// deviceFSMsMutex protects concurrent access to DeviceFSMs map
@@ -162,6 +168,12 @@ func (h *MQTTHandler) PublishAvailability(prefix, deviceID, availability string)
 	return h.publishToMQTT(topic, 0, true, availability)
 }
 
+// PublishPosition publishes a device's current position (0-100) to the appropriate topic
+func (h *MQTTHandler) PublishPosition(prefix, deviceID string, position int) error {
+	topic := fmt.Sprintf(PositionTopicTemplate, prefix, deviceID)
+	return h.publishToMQTT(topic, 0, false, fmt.Sprintf("%d", position))
+}
+
 // RemoveEntity removes the Home Assistant entity for the device
 func (h *MQTTHandler) RemoveEntity(deviceID string) error {
 	discoveryTopic := fmt.Sprintf(HomeAssistantConfigTopicTemplate, deviceID)
@@ -184,6 +196,8 @@ func ConfigureDevice(handler *MQTTHandler, conn *dd.Conn, mqttPrefix string, dev
 		"name":                  device.Name,
 		"command_topic":         fmt.Sprintf(CommandTopicTemplate, mqttPrefix, device.ID),
 		"state_topic":           fmt.Sprintf(StateTopicTemplate, mqttPrefix, device.ID),
+		"position_topic":        fmt.Sprintf(PositionTopicTemplate, mqttPrefix, device.ID),
+		"set_position_topic":    fmt.Sprintf(SetPositionTopicTemplate, mqttPrefix, device.ID),
 		"availability_topic":    fmt.Sprintf(AvailabilityTopicTemplate, mqttPrefix, device.ID),
 		"availability_mode":     "latest",
 		"payload_open":          "go_open",
@@ -195,6 +209,8 @@ func ConfigureDevice(handler *MQTTHandler, conn *dd.Conn, mqttPrefix string, dev
 		"state_stopping":        "stopping",
 		"payload_available":     "online",
 		"payload_not_available": "offline",
+		"position_open":         100,
+		"position_closed":       0,
 		"optimistic":            false,
 		"retain":                false,
 		"device_class":          "garage",
@@ -319,6 +335,11 @@ func NewDeviceFSM(deviceID string, mqttPrefix string, conn *dd.Conn, mqttHandler
 					logger.WithError(err).WithField("deviceID", deviceID).Error("Error setting Device to opened")
 					return
 				}
+				// Publish position as 100 (fully open)
+				err = mqttHandler.PublishPosition(mqttPrefix, deviceID, PositionOpen)
+				if err != nil {
+					logger.WithError(err).WithField("deviceID", deviceID).Error("Error publishing open position")
+				}
 				logger.WithField("deviceID", deviceID).Info("Device is fully Opened")
 			},
 			"enter_closed": func(ctx context.Context, e *fsm.Event) {
@@ -326,6 +347,11 @@ func NewDeviceFSM(deviceID string, mqttPrefix string, conn *dd.Conn, mqttHandler
 				if err != nil {
 					logger.WithError(err).WithField("deviceID", deviceID).Error("Error setting Device to closed")
 					return
+				}
+				// Publish position as 0 (fully closed)
+				err = mqttHandler.PublishPosition(mqttPrefix, deviceID, PositionClosed)
+				if err != nil {
+					logger.WithError(err).WithField("deviceID", deviceID).Error("Error publishing closed position")
 				}
 				logger.WithField("deviceID", deviceID).Info("Device is fully Closed")
 			},

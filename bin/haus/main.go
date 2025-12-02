@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -145,7 +146,13 @@ func main() {
 				logger.WithField("deviceID", device.ID).Info("Device already configured")
 			}
 
-			// Determine the desired FSM state
+			// Always publish position updates from the device
+			err := mqttHandler.PublishPosition(*flagMqttPrefix, device.ID, device.Device.Position)
+			if err != nil {
+				logger.WithError(err).WithField("deviceID", device.ID).Error("Failed to publish position update")
+			}
+
+			// Determine the desired FSM state based on position
 			var haState string
 			switch device.Device.Position {
 			case OPEN:
@@ -153,8 +160,12 @@ func main() {
 			case CLOSE:
 				haState = "go_closed"
 			default:
-				logger.WithField("Position", device.Device.Position).Warn("Ignoring intermediate or unknown position")
-				continue // Skip this device
+				// Intermediate position - we've already published the position above
+				logger.WithFields(logrus.Fields{
+					"Position": device.Device.Position,
+					"deviceID": device.ID,
+				}).Debug("Device at intermediate position")
+				continue // Don't trigger FSM for intermediate positions
 			}
 
 			currentState := deviceFSM.Current()
@@ -180,7 +191,7 @@ func main() {
 			}
 
 			// Process the state transition
-			err := deviceFSM.Trigger(context.Background(), haState)
+			err = deviceFSM.Trigger(context.Background(), haState)
 			if err != nil {
 				logger.WithError(err).
 					WithField("haState", haState).
@@ -246,6 +257,7 @@ func connectToMQTT(broker, user, password string, port int) mqtt.Client {
 // Subscribe to MQTT topics
 func subscribeToMQTTCommandTopics(mqttHandler *ddapi.MQTTHandler, prefix string) {
 	commandTopics := fmt.Sprintf(ddapi.CommandTopicTemplate, prefix, "+")
+	setPositionTopics := fmt.Sprintf(ddapi.SetPositionTopicTemplate, prefix, "+")
 
 	// If not connected, skip subscribing; OnConnect will invoke us again
 	if !mqttHandler.Client.IsConnected() {
@@ -253,9 +265,10 @@ func subscribeToMQTTCommandTopics(mqttHandler *ddapi.MQTTHandler, prefix string)
 		return
 	}
 
+	// Subscribe to command topic
 	token := mqttHandler.Client.Subscribe(commandTopics, 0, func(client mqtt.Client, msg mqtt.Message) {
 		payload := strings.ToUpper(string(msg.Payload()))
-		logger.WithField("payload", payload).WithField("commandTopics", commandTopics).Info("processing mqtt message")
+		logger.WithField("payload", payload).WithField("topic", msg.Topic()).Info("processing mqtt command")
 		handleCommand(msg.Topic(), payload)
 	})
 	if !token.WaitTimeout(3 * time.Second) {
@@ -266,7 +279,23 @@ func subscribeToMQTTCommandTopics(mqttHandler *ddapi.MQTTHandler, prefix string)
 		logger.WithError(err).WithField("topic", commandTopics).Warn("Subscribe failed; will retry on next reconnect")
 		return
 	}
-	logger.WithField("commandTopics", commandTopics).Info("Subscribed to topic")
+	logger.WithField("commandTopics", commandTopics).Info("Subscribed to command topic")
+
+	// Subscribe to set_position topic
+	token = mqttHandler.Client.Subscribe(setPositionTopics, 0, func(client mqtt.Client, msg mqtt.Message) {
+		payload := string(msg.Payload())
+		logger.WithField("payload", payload).WithField("topic", msg.Topic()).Info("processing mqtt set_position")
+		handleSetPosition(msg.Topic(), payload)
+	})
+	if !token.WaitTimeout(3 * time.Second) {
+		logger.WithField("topic", setPositionTopics).Warn("Subscribe timed out; will retry on next reconnect")
+		return
+	}
+	if err := token.Error(); err != nil {
+		logger.WithError(err).WithField("topic", setPositionTopics).Warn("Subscribe failed; will retry on next reconnect")
+		return
+	}
+	logger.WithField("setPositionTopics", setPositionTopics).Info("Subscribed to set_position topic")
 }
 
 // Handle incoming MQTT messages
@@ -317,6 +346,69 @@ func handleCommand(topic string, command string) {
 			"deviceID": deviceID,
 			"command":  command}).Warn("Unknown command for device")
 	}
+}
+
+// Handle set_position MQTT messages
+func handleSetPosition(topic string, positionStr string) {
+	parts := strings.Split(topic, "/")
+	if len(parts) < 3 {
+		logger.WithField("topic", topic).Warn("Invalid topic format for set_position")
+		return
+	}
+
+	deviceID := parts[1]
+	// Use thread-safe helper to access DeviceFSMs
+	deviceFSM, exists := ddapi.GetDeviceFSM(deviceID)
+
+	if !exists {
+		logger.WithField("device", deviceID).Error("Device does not exist for set_position")
+		return
+	}
+
+	// Parse position
+	position, err := strconv.Atoi(positionStr)
+	if err != nil {
+		logger.WithFields(logrus.Fields{
+			"deviceID": deviceID,
+			"position": positionStr,
+			"error":    err,
+		}).Error("Invalid position value - must be 0-100")
+		return
+	}
+
+	// Validate range
+	if position < 0 || position > 100 {
+		logger.WithFields(logrus.Fields{
+			"deviceID": deviceID,
+			"position": position,
+		}).Warn("Position out of range - clamping to 0-100")
+	}
+
+	logger.WithFields(logrus.Fields{
+		"deviceID": deviceID,
+		"position": position,
+	}).Info("Setting door position")
+
+	// Get the appropriate command for this position
+	cmd := ddapi.GetCommandForPosition(position)
+
+	// Execute the command
+	err = ddapi.SafeCommand(deviceFSM.Conn, deviceID, cmd)
+	if err != nil {
+		logger.WithFields(logrus.Fields{
+			"deviceID": deviceID,
+			"position": position,
+			"command":  cmd,
+			"error":    err,
+		}).Error("Failed to execute position command")
+		return
+	}
+
+	logger.WithFields(logrus.Fields{
+		"deviceID": deviceID,
+		"position": position,
+		"command":  cmd,
+	}).Info("Position command executed successfully")
 }
 
 func handleStatusUpdates(ctx context.Context, conn *dd.Conn, statusCh chan ddapi.DoorStatus) {

@@ -132,6 +132,12 @@ Payload: {
 - **State Topic**: `dd-door/{deviceID}/state`
   - Payloads: `opening`, `closing`, `open`, `closed`, `stopping`
 
+- **Position Topic**: `dd-door/{deviceID}/position` ⭐ NEW
+  - Payloads: `0` to `100` (integer, current door position)
+
+- **Set Position Topic**: `dd-door/{deviceID}/set_position` ⭐ NEW
+  - Payloads: `0` to `100` (integer, desired door position)
+
 - **Availability Topic**: `dd-door/{deviceID}/availability`
   - Payloads: `online`, `offline`
 
@@ -165,13 +171,28 @@ Transitions:
 - **Close** (4) - Fully close door
 - **Stop** (3) - Stop door movement
 
-### Partial Opens
+### Position Control ⭐ NEW
+The add-on now supports precise position control via Home Assistant's position slider!
+
+**Slider Control:** Set any position from 0% (closed) to 100% (open) with 5% granularity.
+
+**Common Use Cases:**
+- **Pet Mode** (20%) - Perfect height for pets
+- **Delivery Mode** (68%) - Package drop-off without full access
+- **Ventilation** (5-10%) - Air circulation
+- **Custom Heights** - Any position in 5% increments
+
+**Implementation:** Uses `GetCommandForPosition()` to map positions to device commands (32-50).
+
+See [POSITION_CONTROL.md](POSITION_CONTROL.md) for detailed usage and examples.
+
+### Partial Opens (Legacy)
 - **PartOpen1** (5) - Pet mode (~20%)
 - **PartOpen2** (6) - Parcel mode (~68%)
 - **PartOpen3** (7) - Custom height
 
 ### Percentage-Based Positioning
-- Commands 32-50 for 5% to 95% positioning
+- Commands 32-50 for 5% to 95% positioning in 5% increments
 
 ### Auxiliary Controls
 - **Light On/Off** (16, 17)
