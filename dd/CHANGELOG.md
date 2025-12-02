@@ -4,6 +4,13 @@ All notable changes to this add-on will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.3.2] - 2025-12-02
+
+### Fixed
+- Removed MQTT section from schema validation to fix "Missing option 'mqtt?'" error
+- MQTT configuration is now truly optional - add manually only if using custom broker
+- Schema validation no longer blocks add-on installation when MQTT section is omitted
+
 ## [0.3.1] - 2025-12-02
 
 ### Changed

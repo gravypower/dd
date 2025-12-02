@@ -190,7 +190,9 @@ debug: false
 
 ### For Custom MQTT Brokers
 
-Only add the `mqtt` section if you want to use a custom broker instead of the Home Assistant MQTT integration:
+Only add the `mqtt` section if you want to use a custom broker instead of the Home Assistant MQTT integration.
+
+**Note:** The `mqtt` section is not in the schema validation (to keep it optional), so you can add it manually:
 
 ```yaml
 code: "your-code"
@@ -199,11 +201,13 @@ host: "192.168.1.100"
 mqtt:
   broker: "192.168.1.50"  # External MQTT broker
   port: 1883
-  username: "mqtt_user"
-  password: "mqtt_pass"
+  username: "mqtt_user"   # Optional
+  password: "mqtt_pass"   # Optional
 mqtt_prefix: "custom-prefix"
 debug: false
 ```
+
+The add-on will automatically detect if the `mqtt.broker` field exists and use it instead of the HA MQTT service.
 
 ## Compliance Checklist
 
