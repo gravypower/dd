@@ -1,6 +1,6 @@
 #include <tunables/global>
 
-profile dd_addon flags=(attach_disconnected,mediate_deleted) {
+profile dd flags=(attach_disconnected,mediate_deleted) {
   #include <abstractions/base>
 
   # Capabilities
@@ -30,42 +30,44 @@ profile dd_addon flags=(attach_disconnected,mediate_deleted) {
   # Access to Home Assistant config directory for credentials
   /config/** rw,
 
-  # Start new profile for dd service
-  /usr/bin/dd/** cx -> dd_service,
+  # Network access for MQTT and SmartDoor device communication
+  network inet stream,
+  network inet6 stream,
+  network inet dgram,
+  network inet6 dgram,
 
-  profile dd_service flags=(attach_disconnected,mediate_deleted) {
-    #include <abstractions/base>
+  # DNS lookups
+  network inet,
+  network inet6,
 
-    # Receive signals from S6-Overlay
-    signal (receive) peer=*_dd_addon,
+  # Access to mapped volumes
+  /share/** rw,
 
-    # Access to options.json and other files within add-on
-    /data/** rw,
+  # Access required for dd service functionality
+  /usr/bin/dd/** rix,
+  /bin/bash rix,
+  /bin/echo ix,
+  /bin/cat ix,
+  /usr/bin/env ix,
 
-    # Access to config for credentials storage
-    /config/** rw,
+  # System files
+  /etc/passwd r,
+  /etc/group r,
+  /etc/nsswitch.conf r,
+  /etc/hosts r,
+  /etc/resolv.conf r,
+  /etc/ssl/** r,
+  /etc/ca-certificates/** r,
 
-    # Network access for MQTT and SmartDoor device communication
-    network inet stream,
-    network inet6 stream,
-    network inet dgram,
-    network inet6 dgram,
+  # Proc and sys access
+  /proc/*/stat r,
+  /proc/sys/net/** r,
+  /sys/kernel/mm/transparent_hugepage/hpage_pmd_size r,
 
-    # Access required for dd service functionality
-    /usr/bin/dd/haus r,
-    /usr/bin/dd/register r,
-    /usr/bin/dd/action r,
-    /bin/bash rix,
-    /bin/echo ix,
-    /etc/passwd r,
-    /etc/group r,
-    /etc/nsswitch.conf r,
-    /etc/hosts r,
-    /etc/resolv.conf r,
-    /etc/ssl/certs/** r,
-    /dev/tty rw,
-    /dev/null rw,
-    /proc/*/stat r,
-    /sys/kernel/mm/transparent_hugepage/hpage_pmd_size r,
-  }
+  # Device access
+  /dev/tty rw,
+  /dev/null rw,
+  /dev/zero rw,
+  /dev/random r,
+  /dev/urandom r,
 }
