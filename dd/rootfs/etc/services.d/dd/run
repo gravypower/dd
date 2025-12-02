@@ -5,15 +5,6 @@
 # ==============================================================================
 bashio::log.info "Starting dd..."
 
-# Wait for MQTT service to become available rather than exiting
-if ! bashio::services.available 'mqtt'; then
-    bashio::log.warning "Home Assistant MQTT service not available; waiting..."
-    bashio::services.wait_for 'mqtt'
-    bashio::log.info "MQTT service is now available."
-fi
-
-bashio::log.info "Using Home Assistant MQTT service."
-
 # Retrieve config/service values
 DD_HOST="$(bashio::config 'host')"
 MQTT_PREFIX="$(bashio::config 'mqtt_prefix')"
@@ -28,6 +19,14 @@ if bashio::config.exists 'mqtt.broker'; then
     MQTT_PASSWORD="$(bashio::config 'mqtt.password')"
 else
     bashio::log.info "Using Home Assistant MQTT service."
+
+    # Wait for MQTT service to become available
+    if ! bashio::services.available 'mqtt'; then
+        bashio::log.warning "Home Assistant MQTT service not available; waiting..."
+        bashio::services.wait_for 'mqtt'
+        bashio::log.info "MQTT service is now available."
+    fi
+
     MQTT_HOST=$(bashio::services 'mqtt' 'host')
     MQTT_PORT=$(bashio::services 'mqtt' 'port')
     MQTT_USER=$(bashio::services 'mqtt' 'username')

@@ -215,15 +215,26 @@ The `dd` directory contains the Home Assistant add-on configuration:
 
 ### Configuration Options
 
+**Basic configuration (uses Home Assistant MQTT automatically):**
 ```yaml
 code: "registration_code"      # From SmartDoor app
 password: "registration_password"
 host: "192.168.1.x"            # Local device IP
-mqtt:
-  broker: "core-mosquitto"
+mqtt_prefix: "dd-door"         # Optional, customize MQTT topic prefix
+debug: false
+```
+
+**Advanced: Custom MQTT broker (optional):**
+```yaml
+code: "registration_code"
+password: "registration_password"
+host: "192.168.1.x"
+mqtt:                          # Only needed for custom brokers
+  broker: "192.168.1.50"
   port: 1883
-  user: ""
-  password: ""
+  username: "mqtt_user"
+  password: "mqtt_pass"
+mqtt_prefix: "dd-door"
 debug: false
 ```
 

@@ -170,38 +170,39 @@ args:
 
 No breaking changes! The add-on configuration is backward compatible:
 
-**Old config (still works):**
+**Minimal config (uses HA MQTT service automatically):**
 ```yaml
 code: "your-code"
 password: "your-password"
 host: "192.168.1.100"
-mqtt: mqtt
+mqtt_prefix: dd-door  # Optional, defaults to dd-door
 debug: false
 ```
 
-**New config (recommended):**
+**With custom MQTT prefix:**
 ```yaml
 code: "your-code"
 password: "your-password"
 host: "192.168.1.100"
-mqtt:
-  broker: core-mosquitto
-  port: 1883
-  username: ""     # Optional
-  password: ""     # Optional
-mqtt_prefix: dd-door
+mqtt_prefix: "custom-prefix"
 debug: false
 ```
 
 ### For Custom MQTT Brokers
 
+Only add the `mqtt` section if you want to use a custom broker instead of the Home Assistant MQTT integration:
+
 ```yaml
+code: "your-code"
+password: "your-password"
+host: "192.168.1.100"
 mqtt:
   broker: "192.168.1.50"  # External MQTT broker
   port: 1883
   username: "mqtt_user"
   password: "mqtt_pass"
 mqtt_prefix: "custom-prefix"
+debug: false
 ```
 
 ## Compliance Checklist

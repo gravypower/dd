@@ -4,6 +4,18 @@ All notable changes to this add-on will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.3.1] - 2025-12-02
+
+### Changed
+- Made MQTT configuration completely optional - now defaults to Home Assistant MQTT integration
+- Removed requirement to specify MQTT broker settings in configuration
+- MQTT service availability check only runs when using HA MQTT (not custom brokers)
+
+### Fixed
+- AppArmor profile name now matches add-on slug (was causing loading errors)
+- Removed nested AppArmor profile structure
+- Simplified configuration schema for better user experience
+
 ## [0.3.0] - 2025-12-02
 
 ### Added

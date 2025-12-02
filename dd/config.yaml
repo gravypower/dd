@@ -1,6 +1,6 @@
 name: SmartDoor MQTT Bridge
 slug: dd
-version: "0.3.1"
+version: "0.3.2"
 image: "ghcr.io/gravypower/{arch}-addon-dd"
 description: SmartDoor garage door integration with MQTT and position control support
 url: "https://github.com/gravypower/dd"
@@ -26,11 +26,6 @@ options:
   code: ""
   password: ""
   host: ""
-  mqtt:
-    broker: core-mosquitto
-    port: 1883
-    username: ""
-    password: ""
   mqtt_prefix: dd-door
   debug: false
 
@@ -38,7 +33,7 @@ schema:
   code: str
   password: password
   host: str
-  mqtt:
+  mqtt?:
     broker: str
     port: port
     username: str?
