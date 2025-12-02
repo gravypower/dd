@@ -1,6 +1,6 @@
 package api
 
-import "github.com/samthor/dd"
+import "github.com/gravypower/dd"
 
 type BasicInfo struct {
 	BaseStation string `json:"bsid"`

@@ -6,8 +6,8 @@ import (
 	"log"
 	"os"
 
-	"github.com/samthor/dd"
-	ddapi "github.com/samthor/dd/api"
+	"github.com/gravypower/dd"
+	ddapi "github.com/gravypower/dd/api"
 )
 
 var (

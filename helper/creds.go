@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"os"
 
-	ddapi "github.com/samthor/dd/api"
+	ddapi "github.com/gravypower/dd/api"
 )
 
 // LoadCreds loads a RegisterResponse from disk.

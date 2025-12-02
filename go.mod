@@ -1,4 +1,4 @@
-module github.com/samthor/dd
+module github.com/gravypower/dd
 
 go 1.23.0
 

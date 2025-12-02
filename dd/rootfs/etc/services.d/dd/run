@@ -16,11 +16,23 @@ bashio::log.info "Using Home Assistant MQTT service."
 
 # Retrieve config/service values
 DD_HOST="$(bashio::config 'host')"
-MQTT_HOST=$(bashio::services 'mqtt' 'host')
-MQTT_PORT=$(bashio::services 'mqtt' 'port')
-MQTT_USER=$(bashio::services 'mqtt' 'username')
-MQTT_PASSWORD=$(bashio::services 'mqtt' 'password')
-DEBUG=$(bashio::config 'debug')    # read from add-on config; was incorrectly using services 'debug'
+MQTT_PREFIX="$(bashio::config 'mqtt_prefix')"
+DEBUG=$(bashio::config 'debug')
+
+# Check if user provided custom MQTT settings or use HA MQTT service
+if bashio::config.exists 'mqtt.broker'; then
+    bashio::log.info "Using custom MQTT broker configuration."
+    MQTT_HOST="$(bashio::config 'mqtt.broker')"
+    MQTT_PORT="$(bashio::config 'mqtt.port')"
+    MQTT_USER="$(bashio::config 'mqtt.username')"
+    MQTT_PASSWORD="$(bashio::config 'mqtt.password')"
+else
+    bashio::log.info "Using Home Assistant MQTT service."
+    MQTT_HOST=$(bashio::services 'mqtt' 'host')
+    MQTT_PORT=$(bashio::services 'mqtt' 'port')
+    MQTT_USER=$(bashio::services 'mqtt' 'username')
+    MQTT_PASSWORD=$(bashio::services 'mqtt' 'password')
+fi
 
 # Conditionally set the debug flag
 if [ "${DEBUG}" = "true" ]; then
@@ -37,5 +49,6 @@ exec /usr/bin/dd/haus \
     -mqttPort "${MQTT_PORT}" \
     -mqttUser "${MQTT_USER}" \
     -mqttPassword "${MQTT_PASSWORD}" \
+    -mqttPrefix "${MQTT_PREFIX}" \
     -credentials /config/dd-credentials.json \
     ${DEBUG_FLAG}

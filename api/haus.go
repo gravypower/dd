@@ -10,7 +10,7 @@ import (
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/looplab/fsm"
-	"github.com/samthor/dd"
+	"github.com/gravypower/dd"
 	"github.com/sirupsen/logrus"
 )
 
