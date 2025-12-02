@@ -26,7 +26,9 @@ const (
 
 var (
 	DeviceFSMs = make(map[string]*DeviceFSM)
-	logger     = logrus.New()
+	// deviceFSMsMutex protects concurrent access to DeviceFSMs map
+	deviceFSMsMutex sync.RWMutex
+	logger          = logrus.New()
 )
 
 func init() {
@@ -36,6 +38,33 @@ func init() {
 		ForceColors:   true,
 	})
 	logger.SetLevel(logrus.InfoLevel)
+}
+
+// GetDeviceFSM safely retrieves a device FSM by ID
+func GetDeviceFSM(deviceID string) (*DeviceFSM, bool) {
+	deviceFSMsMutex.RLock()
+	defer deviceFSMsMutex.RUnlock()
+	fsm, exists := DeviceFSMs[deviceID]
+	return fsm, exists
+}
+
+// SetDeviceFSM safely sets a device FSM
+func SetDeviceFSM(deviceID string, fsm *DeviceFSM) {
+	deviceFSMsMutex.Lock()
+	defer deviceFSMsMutex.Unlock()
+	DeviceFSMs[deviceID] = fsm
+}
+
+// GetAllDeviceFSMs safely returns all device FSMs (used for shutdown)
+func GetAllDeviceFSMs() map[string]*DeviceFSM {
+	deviceFSMsMutex.RLock()
+	defer deviceFSMsMutex.RUnlock()
+	// Return a copy to avoid holding the lock
+	devices := make(map[string]*DeviceFSM, len(DeviceFSMs))
+	for k, v := range DeviceFSMs {
+		devices[k] = v
+	}
+	return devices
 }
 
 // MQTTHandler centralizes MQTT operations
@@ -202,8 +231,9 @@ func ConfigureDevice(handler *MQTTHandler, conn *dd.Conn, mqttPrefix string, dev
 		}()
 	}
 
-	DeviceFSMs[device.ID] = NewDeviceFSM(device.ID, mqttPrefix, conn, handler)
-	return DeviceFSMs[device.ID]
+	deviceFSM := NewDeviceFSM(device.ID, mqttPrefix, conn, handler)
+	SetDeviceFSM(device.ID, deviceFSM)
+	return deviceFSM
 }
 
 // NewDeviceFSM initializes the FSM for a specific device
@@ -246,18 +276,26 @@ func NewDeviceFSM(deviceID string, mqttPrefix string, conn *dd.Conn, mqttHandler
 			},
 			"enter_opening": func(ctx context.Context, e *fsm.Event) {
 				err := mqttHandler.PublishStatus(mqttPrefix, deviceID, "opening")
-				SafeCommand(conn, deviceID, AvailableCommands.Open)
 				if err != nil {
 					logger.WithError(err).WithField("deviceID", deviceID).Error("Error setting Device to opening")
+					return
+				}
+				err = SafeCommand(conn, deviceID, AvailableCommands.Open)
+				if err != nil {
+					logger.WithError(err).WithField("deviceID", deviceID).Error("Error sending open command")
 					return
 				}
 				logger.WithField("deviceID", deviceID).Info("Device is Opening")
 			},
 			"enter_closing": func(ctx context.Context, e *fsm.Event) {
 				err := mqttHandler.PublishStatus(mqttPrefix, deviceID, "closing")
-				SafeCommand(conn, deviceID, AvailableCommands.Close)
 				if err != nil {
 					logger.WithError(err).WithField("deviceID", deviceID).Error("Error setting Device to closing")
+					return
+				}
+				err = SafeCommand(conn, deviceID, AvailableCommands.Close)
+				if err != nil {
+					logger.WithError(err).WithField("deviceID", deviceID).Error("Error sending close command")
 					return
 				}
 				logger.WithField("deviceID", deviceID).Info("Device is Closing")
@@ -265,9 +303,13 @@ func NewDeviceFSM(deviceID string, mqttPrefix string, conn *dd.Conn, mqttHandler
 			"enter_stopping": func(ctx context.Context, e *fsm.Event) {
 				logger.WithField("deviceID", deviceID).Info("Device is Stopping")
 				err := mqttHandler.PublishStatus(mqttPrefix, deviceID, "stopping")
-				SafeCommand(conn, deviceID, AvailableCommands.Stop)
 				if err != nil {
 					logger.WithError(err).WithField("deviceID", deviceID).Error("Error setting Device to stopping")
+					return
+				}
+				err = SafeCommand(conn, deviceID, AvailableCommands.Stop)
+				if err != nil {
+					logger.WithError(err).WithField("deviceID", deviceID).Error("Error sending stop command")
 					return
 				}
 			},

@@ -4,12 +4,16 @@ import (
 	"github.com/samthor/dd"
 )
 
-// Constants for door commands
+// Door command constants - these map to SmartDoor device command codes
 const (
-	CMD_CLOSE       = 4
-	CMD_PET_OPEN    = 6
+	// CMD_OPEN fully opens the door (position 100)
+	CMD_OPEN = 2
+	// CMD_CLOSE fully closes the door (position 0)
+	CMD_CLOSE = 4
+	// CMD_PET_OPEN opens the door to pet height (position ~20)
+	CMD_PET_OPEN = 6
+	// CMD_PARCEL_OPEN opens the door to parcel height (position ~68)
 	CMD_PARCEL_OPEN = 7
-	CMD_OPEN        = 2
 )
 
 // DoorStatusDevice represents the status of a single device.
@@ -92,15 +96,17 @@ func CommandForRatio(position int) int {
 	}
 }
 
-// SafeFetchStatus fetches the door status safely.
-func SafeFetchStatus(conn *dd.Conn) *DoorStatus {
+// SafeFetchStatus fetches the door status and returns an error if it fails.
+// This function no longer calls Fatal() to allow graceful error handling.
+func SafeFetchStatus(conn *dd.Conn) (*DoorStatus, error) {
 	var status DoorStatus
 	err := conn.RPC(dd.RPC{
 		Path:   "/app/res/devices/fetch",
 		Output: &status,
 	})
 	if err != nil {
-		logger.WithField("error", err).Fatal("Could not fetch door status")
+		logger.WithField("error", err).Error("Could not fetch door status")
+		return nil, err
 	}
-	return &status
+	return &status, nil
 }

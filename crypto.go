@@ -24,13 +24,15 @@ type cbcEncCipher struct {
 	cbcCipher
 }
 
+// NewEncCipher creates a new AES-CBC encryption cipher with the given key and timestamp.
+// Returns an error if the key length is invalid (must be 16, 24, or 32 bytes for AES).
 func NewEncCipher(key []byte, t int) (*cbcEncCipher, error) {
 	out := &cbcEncCipher{}
 	var err error
 
 	out.block, err = aes.NewCipher(key)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create AES cipher (key length %d bytes): %w", len(key), err)
 	}
 
 	iv := md5hash(fmt.Sprintf("%d", t))
@@ -49,13 +51,15 @@ type cbcDecCipher struct {
 	cbcCipher
 }
 
+// NewDecCipher creates a new AES-CBC decryption cipher with the given key and timestamp.
+// Returns an error if the key length is invalid (must be 16, 24, or 32 bytes for AES).
 func NewDecCipher(key []byte, t int) (*cbcDecCipher, error) {
 	out := &cbcDecCipher{}
 	var err error
 
 	out.block, err = aes.NewCipher(key)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to create AES cipher (key length %d bytes): %w", len(key), err)
 	}
 
 	iv := md5hash(fmt.Sprintf("%d", t))
@@ -122,6 +126,7 @@ type dataPayload struct {
 }
 
 // readData reads this dataPayload, transparently decrypting if required.
+// Returns the decrypted data or an error with context about what failed.
 func (dp *dataPayload) readData(key []byte) ([]byte, error) {
 	if !dp.IsEncrypted {
 		return []byte(dp.Data), nil
@@ -129,23 +134,27 @@ func (dp *dataPayload) readData(key []byte) ([]byte, error) {
 
 	c, err := NewDecCipher(key, dp.Time)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to initialize decryption cipher (check phone secret): %w", err)
 	}
 
 	cipherBytes, err := base64.StdEncoding.DecodeString(dp.Data)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to decode base64 encrypted data: %w", err)
 	}
 	return c.Decrypt(cipherBytes), nil
 }
 
 // unmarshalData is a convenience over readData, which unmarshals the payload via JSON.
+// Provides context about whether decryption or JSON parsing failed.
 func (dp *dataPayload) unmarshalData(key []byte, target interface{}) error {
 	b, err := dp.readData(key)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to decrypt payload data: %w", err)
 	} else if len(b) == 0 {
-		return errors.New("no data to unmarshal from payload")
+		return errors.New("no data to unmarshal from payload (empty decrypted content)")
 	}
-	return json.Unmarshal(b, target)
+	if err := json.Unmarshal(b, target); err != nil {
+		return fmt.Errorf("failed to parse JSON from decrypted payload: %w", err)
+	}
+	return nil
 }

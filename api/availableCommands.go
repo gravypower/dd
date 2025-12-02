@@ -5,6 +5,15 @@ import (
 	"strconv"
 )
 
+// AvailableCommands contains all SmartDoor device command codes.
+// These integer codes are sent to the device to trigger specific actions.
+// Command code ranges:
+//   - 2-7: Basic door operations (open, close, partial opens)
+//   - 16-21: Light and auxiliary controls
+//   - 32-50: Percentage-based door positions (5% to 95%)
+//   - 20-21, 257-258: Lockout controls
+//   - 321-322: Cycle testing
+//   - 352-355: Camera alarm controls
 var AvailableCommands = struct {
 	AuxOff                   int
 	AuxOn                    int

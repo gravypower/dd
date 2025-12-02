@@ -10,7 +10,9 @@ type BasicInfo struct {
 	Version     int    `json:"version"`
 }
 
-func FetchBasicInfo(conn *dd.Conn) BasicInfo {
+// FetchBasicInfo fetches basic device information and returns an error if it fails.
+// This function no longer calls Fatal() to allow graceful error handling.
+func FetchBasicInfo(conn *dd.Conn) (*BasicInfo, error) {
 	var info BasicInfo
 	err := conn.SimpleRequest(dd.SimpleRequest{
 		Path:   "/sdk/info",
@@ -18,7 +20,8 @@ func FetchBasicInfo(conn *dd.Conn) BasicInfo {
 		Output: &info,
 	})
 	if err != nil {
-		logger.WithError(err).Fatalf("could not get basic info")
+		logger.WithError(err).Error("could not get basic info")
+		return nil, err
 	}
-	return info
+	return &info, nil
 }

@@ -16,7 +16,9 @@ type CommandOutput struct {
 	Value string `json:"value"`
 }
 
-func SafeCommand(conn *dd.Conn, deviceID string, command int) {
+// SafeCommand sends a command to a device and returns an error if it fails.
+// This function no longer calls Fatal() to allow graceful error handling.
+func SafeCommand(conn *dd.Conn, deviceID string, command int) error {
 
 	logger.WithField("deviceID", deviceID).
 		WithField("command", command).
@@ -33,6 +35,8 @@ func SafeCommand(conn *dd.Conn, deviceID string, command int) {
 		logger.WithFields(logrus.Fields{
 			"commandInput": commandInput,
 			"error":        err,
-		}).Fatal("Could not perform RPC action")
+		}).Error("Could not perform RPC action")
+		return err
 	}
+	return nil
 }

@@ -14,10 +14,15 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// API endpoints and versions
 const (
-	RemoteAPIBase  = "version2.smartdoordevices.com"
-	SDKPort        = 8991
-	DefaultPort    = 8989
+	// RemoteAPIBase is the hostname for the SmartDoor cloud API
+	RemoteAPIBase = "version2.smartdoordevices.com"
+	// SDKPort is the port for SDK-level device communication (unencrypted info endpoint)
+	SDKPort = 8991
+	// DefaultPort is the port for encrypted device API communication
+	DefaultPort = 8989
+	// DefaultVersion is the default client version to report to the server
 	DefaultVersion = "2.21.1"
 )
 
@@ -29,9 +34,13 @@ const (
 	NextAccessResetAheadMillis = 2000
 )
 
+// SimpleRequestTarget specifies which endpoint to send requests to
 const (
+	// DefaultTarget sends requests to the encrypted API endpoint (port 8989)
 	DefaultTarget SimpleRequestTarget = iota
+	// SDKTarget sends requests to the SDK endpoint (port 8991) for basic info
 	SDKTarget
+	// RemoteTarget sends requests to the remote cloud API
 	RemoteTarget
 )
 

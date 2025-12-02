@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -18,9 +17,12 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+// Door position constants (0-100 scale)
 const (
+	// CLOSE represents a fully closed door position
 	CLOSE = 0
-	OPEN  = 100
+	// OPEN represents a fully open door position
+	OPEN = 100
 )
 
 // Logger setup
@@ -87,7 +89,10 @@ func main() {
 		logger.WithError(err).Fatal("failed to connect to dd")
 	}
 
-	basicInfo := ddapi.FetchBasicInfo(&ddConn)
+	basicInfo, err := ddapi.FetchBasicInfo(&ddConn)
+	if err != nil {
+		logger.WithError(err).Fatal("failed to fetch basic device info")
+	}
 	logger.WithField("basicInfo", basicInfo).Debug("Fetched basic information about the connection")
 
 	// Context for background goroutines
@@ -104,7 +109,9 @@ func main() {
 		logger.Info("Shutting down gracefully")
 		// Cancel the background status loop first
 		cancel()
-		for deviceID, fsm := range ddapi.DeviceFSMs {
+		// Use thread-safe helper to get all devices
+		allDevices := ddapi.GetAllDeviceFSMs()
+		for deviceID, fsm := range allDevices {
 			logger.Infof("Shutting down device: %s", deviceID)
 			err := fsm.Trigger(context.Background(), "go_offline")
 			if err != nil {
@@ -120,17 +127,14 @@ func main() {
 	statusCh := make(chan ddapi.DoorStatus)
 	go handleStatusUpdates(ctx, &ddConn, statusCh)
 
-	var deviceFSMsMutex sync.Mutex
 	for status := range statusCh {
 		for _, device := range status.Devices {
 			logger.WithField("Position", device.Device.Position).Info("Announcing Position")
 
-			// Ensure thread-safe access to DeviceFSMs
-			deviceFSMsMutex.Lock()
-			deviceFSM, exists := ddapi.DeviceFSMs[device.ID]
+			// Ensure thread-safe access to DeviceFSMs using helper functions
+			deviceFSM, exists := ddapi.GetDeviceFSM(device.ID)
 			if !exists {
-				deviceFSM = ddapi.ConfigureDevice(mqttHandler, &ddConn, *flagMqttPrefix, device, basicInfo)
-				ddapi.DeviceFSMs[device.ID] = deviceFSM
+				deviceFSM = ddapi.ConfigureDevice(mqttHandler, &ddConn, *flagMqttPrefix, device, *basicInfo)
 				// Subscriptions are handled in MQTT OnConnect handler
 				logger.Info("Waiting on status updates...")
 				err := deviceFSM.Trigger(context.Background(), "go_online")
@@ -140,7 +144,6 @@ func main() {
 			} else {
 				logger.WithField("deviceID", device.ID).Info("Device already configured")
 			}
-			deviceFSMsMutex.Unlock()
 
 			// Determine the desired FSM state
 			var haState string
@@ -275,15 +278,12 @@ func handleCommand(topic string, command string) {
 	}
 
 	deviceID := parts[1]
-	deviceFSM, exists := ddapi.DeviceFSMs[deviceID]
+	// Use thread-safe helper to access DeviceFSMs
+	deviceFSM, exists := ddapi.GetDeviceFSM(deviceID)
 
 	if !exists {
-		logger.WithField(
-			"device",
-			deviceID).WithField(
-			"DeviceFSMs",
-			ddapi.DeviceFSMs).Fatal(
-			"Device not exists")
+		logger.WithField("device", deviceID).Error("Device does not exist")
+		return
 	}
 
 	switch command {
@@ -320,9 +320,17 @@ func handleCommand(topic string, command string) {
 }
 
 func handleStatusUpdates(ctx context.Context, conn *dd.Conn, statusCh chan ddapi.DoorStatus) {
-	status := ddapi.SafeFetchStatus(conn)
-	statusCh <- *status
+	status, err := ddapi.SafeFetchStatus(conn)
+	if err != nil {
+		logger.WithError(err).Error("Failed to fetch initial status")
+		// Continue even if initial fetch fails - messages loop may recover
+	} else {
+		statusCh <- *status
+	}
+
 	if err := helper.LoopMessages(ctx, conn, statusCh); err != nil {
-		logger.WithField("error", err).Fatal("Error reading messages")
+		logger.WithError(err).Error("Error reading messages - connection may be lost")
+		// Allow graceful shutdown instead of Fatal
+		close(statusCh)
 	}
 }
